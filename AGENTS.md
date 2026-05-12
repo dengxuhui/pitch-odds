@@ -76,3 +76,7 @@ tests/                # test_models.py, test_optimizer.py, test_capital.py
 Phase 1 数据管道 → Phase 2 Dixon-Coles 基础模型 → Phase 3 串场优化器 → Phase 4 资金分配+完整回测 → Phase 5 世界杯模型 → Phase 6 Streamlit 仪表板
 
 **先实现泊松/Dixon-Coles，XGBoost 等数据积累后再引入。**
+
+## Agent 行为约束
+
+- **禁止启动长期运行的进程**：任务完成后或在执行任务时不要启动任何会持续占用终端的服务器进程。
