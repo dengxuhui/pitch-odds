@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local large datasets and generated reports
+data/samples/e0/
+reports/backtest_E0_*.json

@@ -131,6 +131,18 @@ CREATE TABLE IF NOT EXISTS model_predictions (
     CONSTRAINT uq_model_prediction UNIQUE (match_id, model_version, predicted_at)
 );
 
+CREATE TABLE IF NOT EXISTS model_params (
+    id            SERIAL PRIMARY KEY,
+    league_id     VARCHAR(10) NOT NULL REFERENCES leagues(id),
+    model_version VARCHAR(50) NOT NULL,
+    trained_at    TIMESTAMPTZ NOT NULL,
+    train_until   DATE NOT NULL,
+    params        JSONB NOT NULL,
+    brier_score   NUMERIC(6,5),
+    n_matches     INT,
+    CONSTRAINT uq_model_params_scope UNIQUE (league_id, model_version, train_until)
+);
+
 CREATE TABLE IF NOT EXISTS parlay_plans (
     id            SERIAL PRIMARY KEY,
     plan_date     DATE NOT NULL,

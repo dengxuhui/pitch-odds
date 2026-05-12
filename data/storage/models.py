@@ -171,6 +171,22 @@ class ModelPrediction(Base):
     is_calibrated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class ModelParams(Base):
+    __tablename__ = "model_params"
+    __table_args__ = (
+        UniqueConstraint("league_id", "model_version", "train_until", name="uq_model_params_scope"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    league_id: Mapped[str] = mapped_column(String(10), ForeignKey("leagues.id"), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    trained_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    train_until: Mapped[date] = mapped_column(Date, nullable=False)
+    params: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    brier_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5), nullable=True)
+    n_matches: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class ParlayPlanModel(Base):
     __tablename__ = "parlay_plans"
 
