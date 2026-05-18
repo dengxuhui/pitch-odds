@@ -1,0 +1,6 @@
+match_id,home_team,away_team,match_date,odds_home,odds_draw,odds_away
+1001,Arsenal,Chelsea,2026-05-20,1.85,3.40,4.20
+1002,Manchester City,Liverpool,2026-05-20,1.70,3.60,5.00
+1003,Tottenham,Manchester Utd,2026-05-21,2.10,3.30,3.50
+1004,Newcastle,Aston Villa,2026-05-21,2.40,3.20,3.00
+1005,West Ham,Everton,2026-05-22,1.95,3.50,3.80
