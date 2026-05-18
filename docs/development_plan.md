@@ -57,7 +57,7 @@
 | Phase 1 | 项目脚手架、接口契约、DB 与 EPL 历史数据管道 | 已完成 | 2026-05-12 | Python 3.11 + PostgreSQL 15 + Redis 7 + Docker | 数据处理/特征工程 |
 | Phase 2 | Dixon-Coles 建模、训练验证、概率校准、回测与报告 | 已完成（首版） | 2026-05-12 | Python 3.11 + PostgreSQL 15 | Dixon-Coles + Isotonic Calibration |
 | Phase 3 | 正期望筛选、串场优化、系统投注 | 已完成 | 2026-05-18 | Python 3.11 | EV Filter + Parlay Optimizer |
-| Phase 4 | Half Kelly、止损、回测与报告 | 未开始 | TBD | Python 3.11 + PostgreSQL | Half Kelly + Backtest Engine |
+| Phase 4 | Half Kelly、止损、资本模拟 | 已完成 | 2026-05-18 | Python 3.11 | Half Kelly + StopLossTracker + CapitalSim |
 | Phase 5 | 世界杯独立建模与历史验证 | 未开始 | TBD | Python 3.11 | Elo + World Cup Model |
 | Phase 6 | Streamlit 仪表板与可视化 | 未开始 | TBD | Streamlit + Plotly | 展示层（消费上游模型输出） |
 
@@ -66,7 +66,7 @@
 - Phase 1：EPL 2018-2024 数据可复现导入；接口校验可阻断非法输入。
 - Phase 2：输出合法三分类概率（和为 1）；完成验证集评估与校准并产出测试集回测报告。
 - Phase 3：`exclude_flag=True` 场次不会进入串场候选；可输出完整 `ParlayPlan`。
-- Phase 4：回测严格时间顺序；止损规则在回测中可触发并记录。
+- Phase 4：Half Kelly 注金计算正确；止损规则可在资本模拟中触发；capital_curve 严格按日期顺序。
 - Phase 5：世界杯模型可独立训练与回测，不与联赛模型参数混用。
 - Phase 6：可视化页面可查看推荐结果、风险标记与回测曲线。
 
