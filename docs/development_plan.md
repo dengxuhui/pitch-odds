@@ -56,7 +56,7 @@
 |---|---|---|---|---|---|
 | Phase 1 | 项目脚手架、接口契约、DB 与 EPL 历史数据管道 | 已完成 | 2026-05-12 | Python 3.11 + PostgreSQL 15 + Redis 7 + Docker | 数据处理/特征工程 |
 | Phase 2 | Dixon-Coles 建模、训练验证、概率校准、回测与报告 | 已完成（首版） | 2026-05-12 | Python 3.11 + PostgreSQL 15 | Dixon-Coles + Isotonic Calibration |
-| Phase 3 | 正期望筛选、串场优化、系统投注 | 未开始 | TBD | Python 3.11 | EV Filter + Parlay Optimizer |
+| Phase 3 | 正期望筛选、串场优化、系统投注 | 已完成 | 2026-05-18 | Python 3.11 | EV Filter + Parlay Optimizer |
 | Phase 4 | Half Kelly、止损、回测与报告 | 未开始 | TBD | Python 3.11 + PostgreSQL | Half Kelly + Backtest Engine |
 | Phase 5 | 世界杯独立建模与历史验证 | 未开始 | TBD | Python 3.11 | Elo + World Cup Model |
 | Phase 6 | Streamlit 仪表板与可视化 | 未开始 | TBD | Streamlit + Plotly | 展示层（消费上游模型输出） |
