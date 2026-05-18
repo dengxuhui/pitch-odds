@@ -62,6 +62,27 @@ def _load_model_params(league_id: str) -> dict:
     return row.params  # type: ignore[return-value]
 
 
+import difflib as _difflib
+
+# 词级别缩写展开表（输入侧常见变体 → 规范词）
+_WORD_EXPAND: dict[str, str] = {
+    "manchester": "man",
+    "utd": "united",
+    "fc": "",
+    "afc": "",
+    "cf": "",
+    "sc": "",
+    "ac": "",
+}
+
+
+def _normalize_name(raw: str) -> str:
+    """将球队名称规范化：小写 + 词级别缩写展开，便于跨别名匹配。"""
+    tokens = raw.strip().lower().split()
+    expanded = [_WORD_EXPAND.get(t, t) for t in tokens]
+    return " ".join(t for t in expanded if t)
+
+
 def _resolve_team_ids(league_id: str, names: list[str]) -> dict[str, int]:
     """将球队名称解析为数据库 ID（大小写不敏感，支持模糊匹配）。"""
     if not names:
@@ -77,21 +98,48 @@ def _resolve_team_ids(league_id: str, names: list[str]) -> dict[str, int]:
         if team.short_name:
             name_map[team.short_name.lower()] = team.id
 
+    # 构建规范化名称 → team_id 的映射（用于缩写展开后的二次查找）
+    norm_map: dict[str, int] = {_normalize_name(k): v for k, v in name_map.items()}
+    all_tnames = list(name_map.keys())
+    all_norm_tnames = list(norm_map.keys())
+
     result: dict[str, int] = {}
     for raw_name in names:
         key = raw_name.strip().lower()
+
+        # 1. 精确匹配
         if key in name_map:
             result[raw_name] = name_map[key]
-        else:
-            # 模糊匹配：包含关系
-            matches = [tid for tname, tid in name_map.items() if key in tname or tname in key]
-            if len(matches) == 1:
-                result[raw_name] = matches[0]
-            else:
-                raise ValueError(
-                    f"无法解析球队名称 '{raw_name}'（联赛 {league_id}）。"
-                    f"\n可用球队：{sorted(set(name_map.keys()))}"
-                )
+            continue
+
+        # 2. 包含关系模糊匹配
+        substr_matches = [tid for tname, tid in name_map.items() if key in tname or tname in key]
+        if len(substr_matches) == 1:
+            result[raw_name] = substr_matches[0]
+            continue
+
+        # 3. 词级别缩写展开后精确匹配（如 "Manchester Utd" → "man united"）
+        norm_key = _normalize_name(raw_name)
+        if norm_key in norm_map:
+            result[raw_name] = norm_map[norm_key]
+            continue
+
+        # 4. 缩写展开后 difflib 模糊匹配
+        close = _difflib.get_close_matches(norm_key, all_norm_tnames, n=1, cutoff=0.6)
+        if close:
+            result[raw_name] = norm_map[close[0]]
+            continue
+
+        # 5. 原始字符串 difflib 模糊匹配
+        close_raw = _difflib.get_close_matches(key, all_tnames, n=1, cutoff=0.6)
+        if close_raw:
+            result[raw_name] = name_map[close_raw[0]]
+            continue
+
+        raise ValueError(
+            f"无法解析球队名称 '{raw_name}'（联赛 {league_id}）。"
+            f"\n可用球队：{sorted(set(name_map.keys()))}"
+        )
     return result
 
 
