@@ -155,6 +155,29 @@ def run_backtest(
     )
 
 
+def _assert_season_order(train_seasons: list[str], val_season: str, test_season: str) -> None:
+    """校验赛季顺序：最后一个训练赛季 < 验证赛季 < 测试赛季，防止数据泄漏。"""
+    def _season_key(s: str) -> tuple[int, int]:
+        # 格式 "YYYY-YY"，取起始年和终止年
+        parts = s.split("-")
+        start = int(parts[0])
+        end_suffix = int(parts[1]) if len(parts) > 1 else start
+        end = (start // 100) * 100 + end_suffix if end_suffix < 100 else end_suffix
+        return (start, end)
+
+    last_train = max(train_seasons, key=_season_key)
+    if _season_key(last_train) >= _season_key(val_season):
+        raise ValueError(
+            f"数据隔离校验失败：最后训练赛季 {last_train!r} 不早于验证赛季 {val_season!r}，"
+            "存在数据泄漏风险"
+        )
+    if _season_key(val_season) >= _season_key(test_season):
+        raise ValueError(
+            f"数据隔离校验失败：验证赛季 {val_season!r} 不早于测试赛季 {test_season!r}，"
+            "存在数据泄漏风险"
+        )
+
+
 def run_backtest_from_rows(
     *,
     rows: list[dict[str, Any]],
@@ -163,6 +186,7 @@ def run_backtest_from_rows(
     val_season: str,
     test_season: str,
 ) -> BacktestResult:
+    _assert_season_order(train_seasons, val_season, test_season)
     enrich_rows_with_team_features(rows)
     train_rows = _rows_for_seasons(rows, train_seasons)
     val_rows = _rows_for_seasons(rows, [val_season])

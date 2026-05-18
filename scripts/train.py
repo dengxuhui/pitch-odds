@@ -94,6 +94,22 @@ def _load_rows(league_id: str, seasons: list[str]) -> list[dict]:
     return rows
 
 
+def _assert_season_order(train_seasons: list[str], val_season: str) -> None:
+    """校验最后训练赛季早于验证赛季，防止数据泄漏。"""
+    def _season_key(s: str) -> tuple[int, int]:
+        parts = s.split("-")
+        start = int(parts[0])
+        end_suffix = int(parts[1]) if len(parts) > 1 else start
+        end = (start // 100) * 100 + end_suffix if end_suffix < 100 else end_suffix
+        return (start, end)
+
+    last_train = max(train_seasons, key=_season_key)
+    if _season_key(last_train) >= _season_key(val_season):
+        raise ValueError(
+            f"数据隔离校验失败：最后训练赛季 {last_train!r} 不早于验证赛季 {val_season!r}"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 2 训练: Dixon-Coles + Isotonic")
     parser.add_argument("--league", default="E0", help="联赛 ID，例如 E0")
@@ -103,6 +119,7 @@ def main() -> None:
     args = parser.parse_args()
 
     train_seasons = _parse_csv_items(args.train_seasons)
+    _assert_season_order(train_seasons, args.val_season)
     all_rows = _load_rows(args.league, train_seasons + [args.val_season])
     enrich_rows_with_team_features(all_rows)
     train_rows = [x for x in all_rows if x["season"] in train_seasons]

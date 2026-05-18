@@ -1,0 +1,135 @@
+name: Daily Predictions
+
+on:
+  # 每天 UTC 07:00 自动运行（北京时间 15:00）
+  # 如需修改推送时间，更改下方 cron 中的小时数（UTC）：
+  #   UTC 00:00 → 北京 08:00
+  #   UTC 07:00 → 北京 15:00
+  #   UTC 10:00 → 北京 18:00
+  #   UTC 14:00 → 北京 22:00
+  schedule:
+    - cron: "0 7 * * 1-6"   # 周一~周六
+
+  # 支持随时手动触发（测试 / 补跑）
+  workflow_dispatch:
+    inputs:
+      leagues:
+        description: "联赛 ID（空格分隔）"
+        default: ""
+        required: false
+      budget:
+        description: "投注预算（元）"
+        default: ""
+        required: false
+      safety_margin:
+        description: "正期望阈值（EV ≥ N）"
+        default: ""
+        required: false
+      plan_date:
+        description: "预测日期 YYYY-MM-DD（默认今日）"
+        default: ""
+        required: false
+
+jobs:
+  predict:
+    name: Generate & Push Daily Predictions
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      REDIS_URL: redis://localhost:6379/0
+      # Variables（可在仓库 Settings → Variables 中修改，无需更改代码）
+      LEAGUES: ${{ vars.LEAGUES || 'E0 SP1 D1 I1 F1' }}
+      BUDGET: ${{ vars.BUDGET || '1000' }}
+      SAFETY_MARGIN: ${{ vars.SAFETY_MARGIN || '1.05' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Alembic migrations
+        run: python3 -m alembic upgrade head
+
+      - name: Resolve run parameters
+        id: params
+        run: |
+          # 手动触发时优先使用 inputs，否则 fallback 到 Variables
+          LEAGUES="${{ github.event.inputs.leagues }}"
+          [ -z "$LEAGUES" ] && LEAGUES="${{ env.LEAGUES }}"
+
+          BUDGET="${{ github.event.inputs.budget }}"
+          [ -z "$BUDGET" ] && BUDGET="${{ env.BUDGET }}"
+
+          SAFETY="${{ github.event.inputs.safety_margin }}"
+          [ -z "$SAFETY" ] && SAFETY="${{ env.SAFETY_MARGIN }}"
+
+          DATE="${{ github.event.inputs.plan_date }}"
+          [ -z "$DATE" ] && DATE="$(date -u +%Y-%m-%d)"
+
+          echo "leagues=$LEAGUES"       >> "$GITHUB_OUTPUT"
+          echo "budget=$BUDGET"         >> "$GITHUB_OUTPUT"
+          echo "safety_margin=$SAFETY"  >> "$GITHUB_OUTPUT"
+          echo "plan_date=$DATE"        >> "$GITHUB_OUTPUT"
+
+          echo "参数确认："
+          echo "  联赛: $LEAGUES"
+          echo "  预算: $BUDGET"
+          echo "  EV阈值: $SAFETY"
+          echo "  日期: $DATE"
+
+      - name: Run CI prediction pipeline
+        run: |
+          python3 -m pipeline.ci_runner \
+            --leagues ${{ steps.params.outputs.leagues }} \
+            --budget ${{ steps.params.outputs.budget }} \
+            --safety-margin ${{ steps.params.outputs.safety_margin }} \
+            --date "${{ steps.params.outputs.plan_date }}" \
+            --output-json /tmp/predict_result.json
+
+      - name: Push results to Discord
+        run: |
+          python3 -m pipeline.discord_notify \
+            --input /tmp/predict_result.json
+
+      - name: Notify Discord on failure
+        if: failure()
+        run: |
+          python3 - <<'EOF'
+          import os, httpx
+          webhook = os.environ.get("DISCORD_WEBHOOK_URL", "")
+          if not webhook:
+              exit(0)
+          payload = {
+            "embeds": [{
+              "title": "⚽ pitch-odds 每日流程失败 ❌",
+              "description": (
+                "预测或推送过程中出现错误，请检查 GitHub Actions 日志。\n"
+                f"[查看日志](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+              ),
+              "color": 0xE74C3C
+            }]
+          }
+          httpx.post(webhook, json=payload, timeout=30)
+          EOF

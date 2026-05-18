@@ -1,0 +1,127 @@
+name: Train Models
+
+on:
+  workflow_dispatch:
+    inputs:
+      leagues:
+        description: "联赛 ID（空格分隔）"
+        default: "E0 SP1 D1 I1 F1"
+        required: false
+      train_seasons:
+        description: "训练赛季（逗号分隔，如 2018-19,2019-20,2020-21,2021-22）"
+        default: "2018-19,2019-20,2020-21,2021-22"
+        required: false
+      val_season:
+        description: "验证赛季（如 2022-23）"
+        default: "2022-23"
+        required: false
+
+  schedule:
+    # 每月 1 日 02:00 UTC 自动重训
+    - cron: "0 2 1 * *"
+
+jobs:
+  train:
+    name: Train Dixon-Coles Models
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      REDIS_URL: redis://localhost:6379/0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Alembic migrations
+        run: python3 -m alembic upgrade head
+
+      - name: Train models
+        id: train
+        run: |
+          LEAGUES="${{ github.event.inputs.leagues || 'E0 SP1 D1 I1 F1' }}"
+          TRAIN_SEASONS="${{ github.event.inputs.train_seasons || '2018-19,2019-20,2020-21,2021-22' }}"
+          VAL_SEASON="${{ github.event.inputs.val_season || '2022-23' }}"
+
+          FAILED=""
+          for league in $LEAGUES; do
+            echo "=== 训练联赛 $league ==="
+            if python3 scripts/train.py \
+                --league "$league" \
+                --train-seasons "$TRAIN_SEASONS" \
+                --val-season "$VAL_SEASON"; then
+              echo "  ✅ $league 训练完成"
+            else
+              echo "  ❌ $league 训练失败"
+              FAILED="$FAILED $league"
+            fi
+          done
+
+          if [ -n "$FAILED" ]; then
+            echo "failed_leagues=$FAILED" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Notify Discord (success)
+        if: success()
+        env:
+          LEAGUES: ${{ github.event.inputs.leagues || 'E0 SP1 D1 I1 F1' }}
+        run: |
+          python3 - <<'EOF'
+          import os, httpx, json
+          webhook = os.environ["DISCORD_WEBHOOK_URL"]
+          leagues = os.environ.get("LEAGUES", "E0 SP1 D1 I1 F1")
+          payload = {
+            "embeds": [{
+              "title": "⚽ pitch-odds 模型训练完成 ✅",
+              "description": (
+                f"**联赛**：{leagues}\n"
+                f"**状态**：所有联赛训练成功\n"
+                "模型已保存到数据库，明日预测将使用最新参数。"
+              ),
+              "color": 0x2ECC71
+            }]
+          }
+          httpx.post(webhook, json=payload, timeout=30)
+          EOF
+
+      - name: Notify Discord (failure)
+        if: failure()
+        run: |
+          python3 - <<'EOF'
+          import os, httpx
+          webhook = os.environ["DISCORD_WEBHOOK_URL"]
+          payload = {
+            "embeds": [{
+              "title": "⚽ pitch-odds 模型训练失败 ❌",
+              "description": (
+                "训练过程中出现错误，请检查 GitHub Actions 日志。\n"
+                f"[查看日志](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+              ),
+              "color": 0xE74C3C
+            }]
+          }
+          httpx.post(webhook, json=payload, timeout=30)
+          EOF

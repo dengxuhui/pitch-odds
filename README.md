@@ -12,19 +12,88 @@
 
 | 模块 | 说明 |
 |---|---|
-| **数据采集** | 历史赛果、开盘赔率、球队状态（伤病/疲劳/近期表现） |
+| **数据采集** | 历史赛果、开盘赔率、球队状态（伤病 / 疲劳 / 近期表现） |
 | **概率模型** | Dixon-Coles 泊松模型 + Isotonic Regression 校准 |
 | **世界杯模型** | Elo 评分 + 俱乐部状态辅助（2026 FIFA World Cup） |
 | **串场优化器** | 正期望筛选 → 三层串场策略（保底 / 核心 / 冲击） |
 | **资金分配** | Half Kelly 公式 + 单日止损 / 连亏止损 / 总回撤保护 |
-| **回测引擎** | 严格时间切割，防数据泄漏，输出 HTML/JSON 报告 |
-| **仪表板** | Streamlit 可视化（推荐看板 / 赔率分析 / 回测报告） |
+| **回测引擎** | 严格时间切割，防数据泄漏，输出 JSON 报告 |
+| **自动推送** | GitHub Actions 每日自动运行，结果推送到 Discord |
 
 ---
 
-## 快速开始
+## 自动化流程（推荐方式）
 
-### 环境准备
+系统通过 GitHub Actions 实现**全自动运行**，无需手动干预：每天定时拉取赛程 + 赔率 → 生成推荐 → 推送到 Discord。
+
+### 架构
+
+```
+每天定时（默认北京时间 15:00）
+  ↓ .github/workflows/daily.yml 自动触发
+  ↓ 拉取今日赛程（football-data.co.uk）
+  ↓ 拉取最新赔率快照（The Odds API）
+  ↓ Dixon-Coles 预测 + 正期望筛选 + 三层串场优化
+  ↓ Discord 推送推荐 Embed（概率表 + 建议注金）
+     无比赛时静默，不推送
+```
+
+### 第一步：准备外部服务
+
+| 服务 | 用途 | 获取方式 |
+|---|---|---|
+| [Neon.tech](https://neon.tech) 或 [Supabase](https://supabase.com) | 免费托管 PostgreSQL，持久化模型参数 | 注册免费账号，创建数据库，获取连接串 |
+| [The Odds API](https://the-odds-api.com) | 实时赔率数据 | 注册免费账号（500 credits/月） |
+| Discord Webhook | 推送通知 | Discord 频道设置 → 整合 → 创建 Webhook |
+
+### 第二步：配置 GitHub Secrets
+
+在仓库 **Settings → Secrets and variables → Actions → Secrets** 中添加：
+
+| Secret | 说明 |
+|---|---|
+| `DATABASE_URL` | Neon/Supabase 连接串，如 `postgresql+psycopg://user:pass@host/db` |
+| `ODDS_API_KEY` | The Odds API 密钥 |
+| `DISCORD_WEBHOOK_URL` | Discord 频道 Webhook URL |
+
+### 第三步：配置推送参数（可选）
+
+在仓库 **Settings → Secrets and variables → Actions → Variables** 中调整：
+
+| Variable | 默认值 | 说明 |
+|---|---|---|
+| `LEAGUES` | `E0 SP1 D1 I1 F1` | 关注联赛（空格分隔） |
+| `BUDGET` | `1000` | 投注预算（元） |
+| `SAFETY_MARGIN` | `1.05` | 正期望阈值（EV ≥ N） |
+
+修改推送时间：编辑 `.github/workflows/daily.yml` 第 10 行的 cron 表达式（UTC 时间）：
+
+```yaml
+- cron: "0 7 * * 1-6"   # 0=北京08:00  7=北京15:00  10=北京18:00  14=北京22:00
+```
+
+### 第四步：导入历史数据并训练模型（首次）
+
+在本地或通过 GitHub Actions 手动触发 `Train Models` 工作流之前，需先将历史数据导入数据库：
+
+```bash
+# 从 football-data.org 下载历史 CSV 后导入
+python3 -m data.collectors.historical <csv_path> --league-id E0 --season 2024-25
+```
+
+然后在 GitHub Actions → **Train Models** → **Run workflow** 手动触发训练。
+
+训练完成后 `daily.yml` 即可自动运行。
+
+### 手动触发每日流程
+
+除定时运行外，也可随时在 **GitHub Actions → Daily Predictions → Run workflow** 手动触发，支持临时覆盖参数（联赛、预算、日期等）。
+
+---
+
+## 本地开发
+
+### 1. 环境准备
 
 ```bash
 # 安装依赖
@@ -34,203 +103,70 @@ pip install -r requirements.txt
 docker compose up -d
 
 # 初始化数据库
-python3 scripts/init_db.py --mode alembic
+python3 -m alembic upgrade head
 ```
 
-### 导入数据
+### 2. 下载数据
 
 ```bash
-# 导入历史比赛数据（CSV 来自 football-data.org）
-python3 -m data.collectors.historical <csv_path> --league-id E0 --season 2024-25
+# 下载五大联赛全部历史数据（2018-19 至 2024-25，保存至 data/samples/）
+bash scripts/fetch_historical_data.sh
 
-# 导入赔率数据
-python3 -m data.collectors.odds <csv_path> --league-id E0 --bookmaker bet365 --season 2024-25
+# 只下载指定联赛
+bash scripts/fetch_historical_data.sh --leagues E0 SP1
+
+# 下载并自动导入数据库
+bash scripts/fetch_historical_data.sh --import
 ```
 
-### 训练模型
+### 3. 训练模型
 
 ```bash
-# 训练 Dixon-Coles（英超示例）
 python3 scripts/train.py --league E0 \
-  --train-seasons 2018-19,2019-20,2020-21,2021-22 \
-  --val-season 2022-23
-
-# 训练世界杯 Elo 模型
-python3 scripts/train_worldcup.py
+  --train-seasons 2018-19,2019-20,2020-21,2021-22,2022-23 \
+  --val-season 2023-24
 ```
 
-### 运行回测
+### 4. 运行回测
 
 ```bash
+# 单个联赛（--league 支持 E0 / SP1 / D1 / I1 / F1，默认 E0）
 python3 scripts/backtest.py --league E0 \
-  --train-seasons 2018-19,2019-20,2020-21,2021-22 \
-  --val-season 2022-23 --test-season 2024-25
+  --train-seasons 2018-19,2019-20,2020-21,2021-22,2022-23 \
+  --val-season 2023-24 --test-season 2024-25
+
+# 五大联赛批量回测
+for league in E0 SP1 D1 I1 F1; do
+  python3 scripts/backtest.py --league "$league" \
+    --train-seasons 2018-19,2019-20,2020-21,2021-22,2022-23 \
+    --val-season 2023-24 --test-season 2024-25
+done
 # 报告输出至 reports/backtest_<LEAGUE>_<TIMESTAMP>.json
 ```
 
-### 分析回测结果
-
-**方式一：命令行快速查看指标**
-
-```bash
-cat reports/backtest_E0_<TIMESTAMP>.json | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-m = d['metrics']
-for k, v in m.items():
-    if k != 'calibration_diagnostics':
-        print(f'{k}: {v}')
-"
-```
-
-输出的核心指标说明：
+回测指标说明：
 
 | 指标 | 含义 |
 |---|---|
-| `brier_score` | 概率误差，越低越好（随机基线约 0.667） |
+| `brier_score` | 概率误差，越低越好 |
 | `hit_rate` | 最高概率结果的预测准确率 |
-| `roi` | 平注策略回报率（不含 Kelly / 串场） |
+| `roi` | 平注策略回报率（反映模型纯预测能力） |
 | `max_drawdown` | 最大回撤（单位：注） |
 | `sharpe_ratio` | 风险调整收益 |
 
-**方式二：Streamlit 仪表板（可视化）**
+### 5. Web 端分析
 
 ```bash
 streamlit run dashboard/app.py
 ```
 
-包含校准曲线、累计收益走势、赔率分析等交互图表。
+浏览器访问 `http://localhost:8501`，可查看推荐场次、赔率异常分析、回测报告等。
 
-**方式三：Python 脚本深度分析**
-
-```python
-import json
-from pathlib import Path
-
-report = json.loads(Path("reports/backtest_E0_<TIMESTAMP>.json").read_text())
-
-# 校准曲线：预测概率 vs 实际频率
-for outcome in ["home", "draw", "away"]:
-    print(f"\n=== {outcome} ===")
-    for b in report["metrics"]["calibration_diagnostics"][outcome]["calibrated"]:
-        diff = b["mean_predicted"] - b["actual_frequency"]
-        print(f"  [{b['range_start']:.1f}-{b['range_end']:.1f}] "
-              f"预测={b['mean_predicted']:.3f} 实际={b['actual_frequency']:.3f} 偏差={diff:+.3f}")
-
-# 逐场预测明细
-predictions = report["predictions"]
-high_conf = [p for p in predictions if max(p["p_home"], p["p_draw"], p["p_away"]) > 0.6]
-print(f"\n高确信度场次（>60%）：{len(high_conf)}")
-```
-
-> **注意**：`roi` 基于平注策略，反映模型纯预测能力。实际投注收益需结合正期望筛选（`optimizer/`）和 Half Kelly 资金分配（`capital/`）。
-
----
-
-## 购买建议完整流程
-
-> 对即将进行的比赛获取串场推荐和建议注金。
-
-### 第一步：训练模型（首次或新赛季后执行一次）
+### 运行测试
 
 ```bash
-python3 scripts/train.py --league E0 \
-  --train-seasons 2018-19,2019-20,2020-21,2021-22 \
-  --val-season 2022-23
-```
-
-模型参数自动保存到 PostgreSQL（`model_params` 表）。
-
-### 第二步：准备即将进行的比赛 CSV
-
-创建 `upcoming.csv`（参考 `upcoming_example.csv`）：
-
-```csv
-match_id,home_team,away_team,match_date,odds_home,odds_draw,odds_away
-1001,Arsenal,Chelsea,2026-05-20,1.85,3.40,4.20
-1002,Manchester City,Liverpool,2026-05-20,1.70,3.60,5.00
-1003,Tottenham,Manchester Utd,2026-05-21,2.10,3.30,3.50
-```
-
-> 球队名称须与数据库中一致（导入历史数据时的名称）。也可直接填 `home_team_id` / `away_team_id`（整数）。
-
-### 第三步：运行预测脚本
-
-```bash
-python3 scripts/predict.py \
-  --league E0 \
-  --input upcoming.csv \
-  --budget 1000 \
-  --safety-margin 1.05
-```
-
-输出示例：
-
-```
-[1/4] 加载模型参数（E0）...
-[2/4] 读取比赛数据：upcoming.csv（共 5 场）
-[3/4] 运行模型预测与概率校准...
-[4/4] 正期望筛选（EV ≥ 1.05）+ 生成串场方案...
-
-【全部场次预测概率】
-  场次                            主胜      平局      客胜    主赔    平赔    客赔
-  Arsenal vs Chelsea           48.23%   26.10%   25.67%   1.85    3.40    4.20
-  ...
-
-【正期望候选场次】
-  场次                           投注方向   赔率  模型概率      EV  优势Edge
-  Arsenal vs Chelsea           主胜      1.85    48.23%   0.892   ...
-
-【三层串场建议】
-  ▶ 保底层（2~3串）
-    组合赔率: 6.29  胜率: 23.11%  EV: 1.453
-    本层预算: 400元  Half Kelly 比例: 12.30%  建议注金: 49元
-    选腿：
-      · Arsenal 主胜 @1.85 (p=48.23%)
-      · Manchester City 主胜 @1.70 (p=...)
-  ...
-```
-
-**常用参数：**
-
-| 参数 | 说明 | 默认值 |
-|---|---|---|
-| `--league` | 联赛 ID（E0/SP1/D1/I1/F1） | E0 |
-| `--input` | 比赛 CSV 文件路径 | 必填 |
-| `--budget` | 总投注预算（元） | 1000 |
-| `--safety-margin` | EV 安全边际（建议 1.05~1.15） | 1.05 |
-| `--plan-date` | 方案日期 YYYY-MM-DD | 今日 |
-| `--output-dir` | 将推荐结果另存为 JSON 的目录 | 不保存 |
-
-### 第四步：可视化查看（可选）
-
-```bash
-streamlit run dashboard/app.py
-```
-
-在 📋推荐页选择对应回测报告，可交互式调整安全边际和预算。
-
----
-
-### Phase 1 端到端验收
-
-```bash
-bash scripts/run_phase1_e2e.sh "/path/to/E0_2024_25.csv" \
-  --league-id E0 --season 2024-25 --bookmaker bet365
-
-PYTHONPATH="$(pwd)" python3 scripts/verify_phase1.py --league-id E0 --strict
-```
-
----
-
-## 测试
-
-```bash
-# 运行全部测试（151 tests）
-python3 -m pytest
-
-# 带详情输出
-python3 -m pytest -v
+python3 -m pytest          # 全部测试（151 tests）
+python3 -m pytest -v       # 带详情
 ```
 
 ---
@@ -238,12 +174,15 @@ python3 -m pytest -v
 ## 目录结构
 
 ```
+.github/workflows/
+  daily.yml         # 每日自动预测 + Discord 推送
+  train.yml         # 模型训练（手动 / 每月定时）
 data/
   collectors/       # 历史数据、赔率采集
   processors/       # form_score / fatigue / injury / odds_anomaly
   storage/          # SQLAlchemy models + Alembic migrations
 interfaces/
-  contracts.py      # 所有模块间 TypedDict 接口定义（唯一真相源）
+  contracts.py      # 所有模块间 TypedDict 接口定义
 models/
   dixon_coles.py    # Dixon-Coles 泊松模型
   calibration.py    # Isotonic Regression 校准
@@ -251,10 +190,14 @@ optimizer/          # EV 筛选 / 串场优化 / 系统投注
 capital/            # Half Kelly / 资金分配 / 止损
 backtest/           # 回测引擎 / 指标 / 报告
 worldcup/           # Elo 模型 + 俱乐部状态辅助
+pipeline/
+  run_daily.py      # 本地完整轮询流程
+  ci_runner.py      # CI 单次执行入口
+  discord_notify.py # Discord Webhook 推送
 dashboard/          # Streamlit 仪表板入口
-scripts/            # 各阶段入口脚本
+scripts/            # 训练 / 回测 / 数据导入脚本
 tests/              # pytest 测试套件
-docs/               # 设计文档 / 开发计划
+docs/               # 设计文档
 ```
 
 ---
@@ -262,19 +205,17 @@ docs/               # 设计文档 / 开发计划
 ## 技术栈
 
 - **Python 3.11+**
-- **PostgreSQL 15** — 历史数据、回测记录
+- **PostgreSQL 15** — 历史数据、模型参数持久化
 - **Redis 7** — 赔率实时缓存
 - **SQLAlchemy + Alembic** — ORM 与数据库迁移
-- **Streamlit + Plotly** — 可视化仪表板
+- **GitHub Actions** — 自动化调度与 Discord 推送
 - **Docker Compose** — 本地开发环境
 
 ---
 
 ## 文档
 
-- 设计文档：[`docs/pitch_odds_design.md`](docs/pitch_odds_design.md)
-- 开发计划：[`docs/development_plan.md`](docs/development_plan.md)
-- Phase 1 测试清单：[`docs/phase1_test_checklist.md`](docs/phase1_test_checklist.md)
+- 系统设计：[`docs/pitch_odds_design.md`](docs/pitch_odds_design.md)
 
 ---
 
