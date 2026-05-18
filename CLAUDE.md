@@ -6,7 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 足球量化分析系统，覆盖欧洲五大联赛（EPL/LaLiga/Bundesliga/SerieA/Ligue1）与 2026 FIFA 世界杯。核心目标：通过概率模型识别正期望场次，系统化生成最优多串场组合，最大化期望收益。
 
-**当前进度**：Phase 1（数据管道）和 Phase 2（Dixon-Coles 建模）已完成，Phase 3（串场优化器）尚未开始。
+**当前进度**：所有 Phase 1~6 均已完成并通过测试（151 tests passed）。
+- Phase 1：数据管道（collectors / processors / storage）✅
+- Phase 2：Dixon-Coles 基础模型 + Isotonic 校准 ✅
+- Phase 3：串场优化器（正期望筛选 / 三层串场 / 系统投注）✅
+- Phase 4：资金分配（Half Kelly / 止损）+ 完整回测 ✅
+- Phase 5：世界杯 Elo 模型 + 俱乐部状态辅助 ✅
+- Phase 6：Streamlit 仪表板（推荐 / 赔率分析 / 回测报告）✅
 
 ## 常用命令
 
