@@ -6,6 +6,7 @@ from math import exp, lgamma, log
 from typing import Any
 
 import numpy as np
+from scipy.optimize import Bounds, minimize
 
 from interfaces.contracts import MatchFeatures, ModelRawOutput, validate_model_raw_output
 from models.base import PredictionModel
@@ -85,27 +86,18 @@ class DixonColesModel(PredictionModel):
             return -(log_like - l2_penalty)
 
         theta = np.zeros((2 * n_teams) + 2)
-        best = objective(theta)
-        step = 0.2
-        for _ in range(120):
-            improved = False
-            for idx in range(theta.shape[0]):
-                for direction in (-1.0, 1.0):
-                    cand = theta.copy()
-                    cand[idx] += direction * step
-                    if idx == theta.shape[0] - 2:
-                        cand[idx] = float(np.clip(cand[idx], -1.0, 1.0))
-                    if idx == theta.shape[0] - 1:
-                        cand[idx] = float(np.clip(cand[idx], -0.5, 0.5))
-                    value = objective(cand)
-                    if value < best:
-                        theta = cand
-                        best = value
-                        improved = True
-            if not improved:
-                step *= 0.7
-                if step < 1e-3:
-                    break
+        lower = np.full(theta.shape, -np.inf)
+        upper = np.full(theta.shape, np.inf)
+        lower[-2], upper[-2] = -1.0, 1.0   # gamma 范围
+        lower[-1], upper[-1] = -0.5, 0.5   # rho 范围
+        result = minimize(
+            objective,
+            theta,
+            method="L-BFGS-B",
+            bounds=Bounds(lower, upper),
+            options={"maxiter": 2000, "ftol": 1e-9},
+        )
+        theta = result.x
 
         attack = theta[:n_teams] - np.mean(theta[:n_teams])
         defense = theta[n_teams : 2 * n_teams]

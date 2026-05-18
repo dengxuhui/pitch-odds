@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from typing import Any
@@ -7,6 +8,9 @@ from typing import Any
 from sqlalchemy import Select, and_, select
 from sqlalchemy.orm import Session
 
+from data.processors.fatigue import fatigue_index as _calc_fatigue
+from data.processors.form_score import form_score as _calc_form
+from data.processors.momentum import momentum_score as _calc_momentum
 from data.storage.models import Match, OddsOpening
 from interfaces.contracts import MatchFeatures
 from models.calibration import IsotonicThreeWayCalibrator
@@ -42,6 +46,97 @@ class BacktestResult:
     predictions: list[BacktestPrediction]
 
 
+def enrich_rows_with_team_features(rows: list[dict[str, Any]]) -> None:
+    """为每条比赛行就地注入 form/momentum/fatigue 特征。
+
+    使用当场比赛之前的历史记录动态计算，不引入未来数据。
+    疲劳指数仅包含场次密度分量（travel_km / minutes_played 需外部数据，此处为 0）。
+    injury_impact 依赖伤病报告，不在此计算，保持 0.0。
+    """
+    # 按球队 ID 建立比赛索引（升序排列）
+    team_index: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        team_index[int(row["home_team_id"])].append(row)
+        team_index[int(row["away_team_id"])].append(row)
+    for matches in team_index.values():
+        matches.sort(key=lambda r: _to_date(r["match_date"]))
+
+    for row in rows:
+        match_date = _to_date(row["match_date"])
+        home_id = int(row["home_team_id"])
+        away_id = int(row["away_team_id"])
+        home_feats = _team_status(home_id, match_date, team_index[home_id])
+        away_feats = _team_status(away_id, match_date, team_index[away_id])
+        row.update({
+            "home_form_5":   home_feats["form_5"],
+            "home_form_10":  home_feats["form_10"],
+            "home_momentum": home_feats["momentum"],
+            "home_fatigue":  home_feats["fatigue"],
+            "away_form_5":   away_feats["form_5"],
+            "away_form_10":  away_feats["form_10"],
+            "away_momentum": away_feats["momentum"],
+            "away_fatigue":  away_feats["fatigue"],
+        })
+
+
+def _team_status(team_id: int, match_date: date, sorted_matches: list[dict[str, Any]]) -> dict[str, float]:
+    """计算单支球队在 match_date 前的状态特征。"""
+    # 取 match_date 之前的已完赛记录，最近优先
+    prior = [
+        r for r in reversed(sorted_matches)
+        if _to_date(r["match_date"]) < match_date and r.get("result") in {"H", "D", "A"}
+    ]
+
+    if not prior:
+        return {"form_5": 0.0, "form_10": 0.0, "momentum": 0.0, "fatigue": 0.0}
+
+    # 积分序列（W=3, D=1, L=0）和距今天数
+    pts_list: list[int] = []
+    days_list: list[int] = []
+    for r in prior[:10]:
+        is_home = int(r["home_team_id"]) == team_id
+        outcome = r["result"]
+        pts = (3 if outcome == "H" else 1 if outcome == "D" else 0) if is_home \
+              else (3 if outcome == "A" else 1 if outcome == "D" else 0)
+        pts_list.append(pts)
+        days_list.append((match_date - _to_date(r["match_date"])).days)
+
+    form_5  = _calc_form(pts_list[:5],  days_list[:5])  if pts_list else 0.0
+    form_10 = _calc_form(pts_list[:10], days_list[:10]) if pts_list else 0.0
+
+    # 连胜/连败条纹（pts_list 最近优先）
+    win_streak = 0
+    for p in pts_list:
+        if p == 3:
+            win_streak += 1
+        else:
+            break
+    loss_streak = 0
+    for p in pts_list:
+        if p == 0:
+            loss_streak += 1
+        else:
+            break
+
+    # 大败标记：最近一场失球差 >= 3
+    r0 = prior[0]
+    hg = r0.get("home_goals") or 0
+    ag = r0.get("away_goals") or 0
+    is_home_r0 = int(r0["home_team_id"]) == team_id
+    big_loss = (ag - hg >= 3) if is_home_r0 else (hg - ag >= 3)
+
+    mom = _calc_momentum(win_streak, loss_streak, big_loss)
+
+    # 疲劳：近30天场次密度（travel_km / minutes_played 暂不可用，置0）
+    matches_30d = sum(
+        1 for r in sorted_matches
+        if 0 < (match_date - _to_date(r["match_date"])).days <= 30
+    )
+    fat = _calc_fatigue(matches_30d, 0.0, 0.0)
+
+    return {"form_5": form_5, "form_10": form_10, "momentum": mom, "fatigue": fat}
+
+
 def run_backtest(
     league_id: str,
     train_seasons: list[str],
@@ -68,6 +163,7 @@ def run_backtest_from_rows(
     val_season: str,
     test_season: str,
 ) -> BacktestResult:
+    enrich_rows_with_team_features(rows)
     train_rows = _rows_for_seasons(rows, train_seasons)
     val_rows = _rows_for_seasons(rows, [val_season])
     test_rows = _rows_for_seasons(rows, [test_season])
@@ -152,8 +248,12 @@ def _load_match_rows(session: Session, league_id: str, seasons: list[str]) -> li
             )
         )
     )
+    seen: set[int] = set()
     rows: list[dict[str, Any]] = []
     for match, odds in session.execute(stmt).all():
+        if match.id in seen:
+            continue
+        seen.add(match.id)
         rows.append(
             {
                 "match_id": match.id,
@@ -199,20 +299,20 @@ def _build_features(row: dict[str, Any]) -> MatchFeatures:
         "match_week": 0,
         "home_team_id": int(row["home_team_id"]),
         "away_team_id": int(row["away_team_id"]),
-        "home_form_5": 0.0,
-        "away_form_5": 0.0,
-        "home_form_10": 0.0,
-        "away_form_10": 0.0,
+        "home_form_5":  float(row.get("home_form_5",  0.0)),
+        "away_form_5":  float(row.get("away_form_5",  0.0)),
+        "home_form_10": float(row.get("home_form_10", 0.0)),
+        "away_form_10": float(row.get("away_form_10", 0.0)),
         "home_goals_scored_avg": 0.0,
         "home_goals_conceded_avg": 0.0,
         "away_goals_scored_avg": 0.0,
         "away_goals_conceded_avg": 0.0,
-        "home_fatigue": 0.0,
-        "away_fatigue": 0.0,
+        "home_fatigue":       float(row.get("home_fatigue",  0.0)),
+        "away_fatigue":       float(row.get("away_fatigue",  0.0)),
         "home_injury_impact": 0.0,
         "away_injury_impact": 0.0,
-        "home_momentum": 0.0,
-        "away_momentum": 0.0,
+        "home_momentum": float(row.get("home_momentum", 0.0)),
+        "away_momentum": float(row.get("away_momentum", 0.0)),
         "days_rest_home": 7,
         "days_rest_away": 7,
         "odds_home": odds_home,

@@ -11,6 +11,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from sqlalchemy import and_, delete, select
 
+from backtest.engine import enrich_rows_with_team_features
 from data.storage.db import SessionLocal
 from data.storage.models import Match, ModelParams, OddsOpening
 from models.calibration import IsotonicThreeWayCalibrator
@@ -33,20 +34,20 @@ def _build_features(row: dict) -> dict:
         "match_week": 0,
         "home_team_id": int(row["home_team_id"]),
         "away_team_id": int(row["away_team_id"]),
-        "home_form_5": 0.0,
-        "away_form_5": 0.0,
-        "home_form_10": 0.0,
-        "away_form_10": 0.0,
+        "home_form_5":  float(row.get("home_form_5",  0.0)),
+        "away_form_5":  float(row.get("away_form_5",  0.0)),
+        "home_form_10": float(row.get("home_form_10", 0.0)),
+        "away_form_10": float(row.get("away_form_10", 0.0)),
         "home_goals_scored_avg": 0.0,
         "home_goals_conceded_avg": 0.0,
         "away_goals_scored_avg": 0.0,
         "away_goals_conceded_avg": 0.0,
-        "home_fatigue": 0.0,
-        "away_fatigue": 0.0,
+        "home_fatigue":       float(row.get("home_fatigue",  0.0)),
+        "away_fatigue":       float(row.get("away_fatigue",  0.0)),
         "home_injury_impact": 0.0,
         "away_injury_impact": 0.0,
-        "home_momentum": 0.0,
-        "away_momentum": 0.0,
+        "home_momentum": float(row.get("home_momentum", 0.0)),
+        "away_momentum": float(row.get("away_momentum", 0.0)),
         "days_rest_home": 7,
         "days_rest_away": 7,
         "odds_home": odds_home,
@@ -63,6 +64,7 @@ def _build_features(row: dict) -> dict:
 
 def _load_rows(league_id: str, seasons: list[str]) -> list[dict]:
     rows: list[dict] = []
+    seen: set[int] = set()
     with SessionLocal() as session:
         stmt = (
             select(Match, OddsOpening)
@@ -70,6 +72,9 @@ def _load_rows(league_id: str, seasons: list[str]) -> list[dict]:
             .where(and_(Match.league_id == league_id, Match.season.in_(seasons)))
         )
         for match, odds in session.execute(stmt).all():
+            if match.id in seen:
+                continue
+            seen.add(match.id)
             rows.append(
                 {
                     "match_id": match.id,
@@ -99,6 +104,7 @@ def main() -> None:
 
     train_seasons = _parse_csv_items(args.train_seasons)
     all_rows = _load_rows(args.league, train_seasons + [args.val_season])
+    enrich_rows_with_team_features(all_rows)
     train_rows = [x for x in all_rows if x["season"] in train_seasons]
     val_rows = [x for x in all_rows if x["season"] == args.val_season and x.get("result") in {"H", "D", "A"}]
     if not train_rows:
