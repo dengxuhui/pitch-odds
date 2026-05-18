@@ -64,7 +64,7 @@ meta_cols[2].markdown(f"**测试赛季：** `{report.get('test_season', '-')}`")
 st.divider()
 
 # ── 资本曲线（按需运行） ──────────────────────────────────
-st.subheader("资本曲线（Phase 4 资金模拟）")
+st.subheader("资本曲线")
 
 if "sim_result" not in st.session_state:
     st.session_state["sim_result"] = None
@@ -112,12 +112,16 @@ if sim is None:
     st.info("点击侧边栏「运行资本模拟」按钮以生成资本曲线。")
 else:
     # 指标行
-    s_cols = st.columns(5)
-    s_cols[0].metric("期末资本",   f"{sim.final_capital:,.2f}")
-    s_cols[1].metric("ROI",         f"{sim.roi:.2%}")
-    s_cols[2].metric("最大回撤",    f"{sim.max_drawdown_pct:.2%}")
-    s_cols[3].metric("投注日",      sim.n_betting_days)
-    s_cols[4].metric("跳过日",      sim.n_skipped_days)
+    capital_roi = (sim.final_capital - sim.initial_capital) / sim.initial_capital
+    s_cols = st.columns(6)
+    s_cols[0].metric("期末资本",       f"{sim.final_capital:,.2f}")
+    s_cols[1].metric("资本回报率",     f"{capital_roi:.2%}",
+                     help="(期末资本 - 初始资本) / 初始资本")
+    s_cols[2].metric("注金回报率",     f"{sim.roi:.2%}",
+                     help="(总回报 - 总注金) / 总注金；仅统计实际下注部分，与资本回报率口径不同")
+    s_cols[3].metric("最大回撤",       f"{sim.max_drawdown_pct:.2%}")
+    s_cols[4].metric("投注日",         sim.n_betting_days)
+    s_cols[5].metric("跳过日",         sim.n_skipped_days)
 
     # 资本曲线
     curve_df = capital_curve_df(sim)
