@@ -59,7 +59,7 @@
 | Phase 3 | 正期望筛选、串场优化、系统投注 | 已完成 | 2026-05-18 | Python 3.11 | EV Filter + Parlay Optimizer |
 | Phase 4 | Half Kelly、止损、资本模拟 | 已完成 | 2026-05-18 | Python 3.11 | Half Kelly + StopLossTracker + CapitalSim |
 | Phase 5 | 世界杯独立建模与历史验证 | 已完成 | 2026-05-18 | Python 3.11 | Elo + WorldCupModel + ClubFormMapper |
-| Phase 6 | Streamlit 仪表板与可视化 | 未开始 | TBD | Streamlit + Plotly | 展示层（消费上游模型输出） |
+| Phase 6 | Streamlit 仪表板与可视化 | 已完成 | 2026-05-18 | Streamlit 1.45 + Plotly 6.1 | 展示层（消费上游模型输出） |
 
 ## 4. 验收标准（按阶段）
 
@@ -68,7 +68,7 @@
 - Phase 3：`exclude_flag=True` 场次不会进入串场候选；可输出完整 `ParlayPlan`。
 - Phase 4：Half Kelly 注金计算正确；止损规则可在资本模拟中触发；capital_curve 严格按日期顺序。
 - Phase 5：世界杯模型可独立训练与回测，不与联赛模型参数混用。
-- Phase 6：可视化页面可查看推荐结果、风险标记与回测曲线。
+- Phase 6：可视化页面可查看推荐结果（EV 高亮 + 风险标记）、赔率 vs 模型概率散点图、回测曲线与资本模拟；演示模式无需 DB。
 
 ## 5. 开发顺序约束
 
