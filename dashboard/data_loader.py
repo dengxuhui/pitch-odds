@@ -211,15 +211,21 @@ def build_parlay_summary(
 # ──────────────────────────────────────────────
 
 def metrics_summary(report: dict[str, Any]) -> dict[str, Any]:
-    """从报告 dict 中提取关键指标，返回展示友好的 dict。"""
+    """从报告 dict 中提取关键指标，返回展示友好的 dict。
+
+    ROI / 回撤基于固定注金（Flat Stake = 1 unit）策略：
+    EV ≥ 1.05 的场次各投 1 unit，每场最多一注，不使用 Kelly 动态定注。
+    """
     m = report.get("metrics", {})
     return {
-        "比赛场次":   m.get("total_matches", "-"),
-        "Brier 分":   f"{m.get('brier_score', 0):.4f}",
-        "命中率":     f"{m.get('hit_rate', 0):.2%}",
-        "ROI":        f"{m.get('roi', 0):.2%}",
-        "最大回撤":   f"{m.get('max_drawdown', 0):.2f}",
-        "夏普比率":   f"{m.get('sharpe_ratio', 0):.3f}",
+        "比赛场次":     m.get("total_matches", "-"),
+        "正期望下注":   m.get("n_ev_bets", "-"),
+        "覆盖率":       f"{m.get('coverage_pct', 0):.1%}",
+        "Brier 分":     f"{m.get('brier_score', 0):.4f}",
+        "命中率":       f"{m.get('hit_rate', 0):.2%}",
+        "ROI":          f"{m.get('roi', 0):.2%}",
+        "最大回撤(注)": f"{m.get('max_drawdown_units', m.get('max_drawdown', 0)):.1f}",
+        "夏普比率":     f"{m.get('sharpe_ratio', 0):.3f}",
     }
 
 

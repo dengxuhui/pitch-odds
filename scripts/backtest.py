@@ -28,6 +28,9 @@ def main() -> None:
     parser.add_argument("--output-dir", default="reports", help="报告输出目录")
     parser.add_argument("--capital-sim", action="store_true", help="同时运行 Phase 4 资本模拟")
     parser.add_argument("--initial-capital", type=float, default=10_000.0, help="模拟初始资本")
+    parser.add_argument("--form-weight", type=float, default=0.08, help="form/momentum 特征权重")
+    parser.add_argument("--fatigue-weight", type=float, default=0.05, help="疲劳特征权重")
+    parser.add_argument("--skip-calibration", action="store_true", help="跳过 Platt 校准，直接使用原始概率")
     args = parser.parse_args()
 
     train_seasons = _parse_csv_items(args.train_seasons)
@@ -38,6 +41,9 @@ def main() -> None:
             val_season=args.val_season,
             test_season=args.test_season,
             session=session,
+            form_weight=args.form_weight,
+            fatigue_weight=args.fatigue_weight,
+            skip_calibration=args.skip_calibration,
         )
 
     metrics = compute_metrics(result)

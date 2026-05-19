@@ -35,11 +35,20 @@ class _TrainingMatch:
 
 
 class DixonColesModel(PredictionModel):
-    model_version = "dixon_coles_v1"
+    model_version = "dixon_coles_v2"
 
-    def __init__(self, *, decay_xi: float = 0.0018, max_goals: int = 10) -> None:
+    def __init__(
+        self,
+        *,
+        decay_xi: float = 0.0018,
+        max_goals: int = 10,
+        form_weight: float = 0.08,
+        fatigue_weight: float = 0.05,
+    ) -> None:
         self.decay_xi = decay_xi
         self.max_goals = max_goals
+        self.form_weight = form_weight
+        self.fatigue_weight = fatigue_weight
         self._team_order: list[str] = []
         self._attack: dict[str, float] = {}
         self._defense: dict[str, float] = {}
@@ -120,6 +129,23 @@ class DixonColesModel(PredictionModel):
 
         lambda_home = exp(attack_home + defense_away + self._gamma)
         lambda_away = exp(attack_away + defense_home)
+
+        # 状态修正：form / momentum / fatigue 对预期进球率的乘法调整
+        # form_5 ∈ [-1, 1]，momentum ∈ [-0.10, 0.10]，fatigue ∈ [0, 1]
+        home_form     = float(features.get("home_form_5",    0.0))
+        away_form     = float(features.get("away_form_5",    0.0))
+        home_momentum = float(features.get("home_momentum",  0.0))
+        away_momentum = float(features.get("away_momentum",  0.0))
+        home_fatigue  = float(features.get("home_fatigue",   0.0))
+        away_fatigue  = float(features.get("away_fatigue",   0.0))
+
+        lambda_home *= max(0.5, 1.0 + home_form * self.form_weight
+                                     + home_momentum
+                                     - home_fatigue * self.fatigue_weight)
+        lambda_away *= max(0.5, 1.0 + away_form * self.form_weight
+                                     + away_momentum
+                                     - away_fatigue * self.fatigue_weight)
+
         p_home, p_draw, p_away = self._three_way_probs(lambda_home, lambda_away, self._rho)
 
         output: ModelRawOutput = {
@@ -145,6 +171,8 @@ class DixonColesModel(PredictionModel):
             "rho": self._rho,
             "decay_xi": self.decay_xi,
             "max_goals": self.max_goals,
+            "form_weight": self.form_weight,
+            "fatigue_weight": self.fatigue_weight,
             "league_id": self._league_id,
         }
 
@@ -155,6 +183,8 @@ class DixonColesModel(PredictionModel):
         self._rho = float(params["rho"])
         self.decay_xi = float(params.get("decay_xi", self.decay_xi))
         self.max_goals = int(params.get("max_goals", self.max_goals))
+        self.form_weight = float(params.get("form_weight", self.form_weight))
+        self.fatigue_weight = float(params.get("fatigue_weight", self.fatigue_weight))
         self._league_id = str(params.get("league_id")) if params.get("league_id") is not None else None
         self._team_order = sorted(set(self._attack.keys()) | set(self._defense.keys()))
 

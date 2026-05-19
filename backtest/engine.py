@@ -144,6 +144,9 @@ def run_backtest(
     test_season: str,
     *,
     session: Session,
+    form_weight: float = 0.08,
+    fatigue_weight: float = 0.05,
+    skip_calibration: bool = False,
 ) -> BacktestResult:
     rows = _load_match_rows(session, league_id, train_seasons + [val_season, test_season])
     return run_backtest_from_rows(
@@ -152,6 +155,9 @@ def run_backtest(
         train_seasons=train_seasons,
         val_season=val_season,
         test_season=test_season,
+        form_weight=form_weight,
+        fatigue_weight=fatigue_weight,
+        skip_calibration=skip_calibration,
     )
 
 
@@ -185,6 +191,9 @@ def run_backtest_from_rows(
     train_seasons: list[str],
     val_season: str,
     test_season: str,
+    form_weight: float = 0.08,
+    fatigue_weight: float = 0.05,
+    skip_calibration: bool = False,
 ) -> BacktestResult:
     _assert_season_order(train_seasons, val_season, test_season)
     enrich_rows_with_team_features(rows)
@@ -195,23 +204,25 @@ def run_backtest_from_rows(
     if not train_rows or not val_rows or not test_rows:
         raise ValueError("训练/验证/测试数据不完整")
 
-    model = DixonColesModel()
+    model = DixonColesModel(form_weight=form_weight, fatigue_weight=fatigue_weight)
     train_until = max(_to_date(x["match_date"]) for x in train_rows)
     model.fit(_attach_cutoff(train_rows, train_until), league_id)
 
-    calibrator = IsotonicThreeWayCalibrator()
-    val_raw = []
-    val_outcomes = []
-    for row in sorted(val_rows, key=lambda x: _to_date(x["match_date"])):
-        if row.get("result") not in {"H", "D", "A"}:
-            continue
-        features = _build_features(row)
-        raw = model.predict(features)
-        val_raw.append(raw)
-        val_outcomes.append(str(row["result"]))
-    if not val_raw:
-        raise ValueError("验证集没有可用于校准的完赛样本")
-    calibrator.fit(val_raw, val_outcomes)
+    calibrator: IsotonicThreeWayCalibrator | None = None
+    if not skip_calibration:
+        calibrator = IsotonicThreeWayCalibrator()
+        val_raw = []
+        val_outcomes = []
+        for row in sorted(val_rows, key=lambda x: _to_date(x["match_date"])):
+            if row.get("result") not in {"H", "D", "A"}:
+                continue
+            features = _build_features(row)
+            raw = model.predict(features)
+            val_raw.append(raw)
+            val_outcomes.append(str(row["result"]))
+        if not val_raw:
+            raise ValueError("验证集没有可用于校准的完赛样本")
+        calibrator.fit(val_raw, val_outcomes)
 
     predictions: list[BacktestPrediction] = []
     for row in sorted(test_rows, key=lambda x: _to_date(x["match_date"])):
@@ -219,7 +230,17 @@ def run_backtest_from_rows(
             continue
         features = _build_features(row)
         raw = model.predict(features)
-        calibrated = calibrator.calibrate(raw, features)
+
+        if calibrator is not None:
+            calibrated = calibrator.calibrate(raw, features)
+            p_home = float(calibrated["p_home"])
+            p_draw = float(calibrated["p_draw"])
+            p_away = float(calibrated["p_away"])
+        else:
+            p_home = float(raw["p_home_raw"])
+            p_draw = float(raw["p_draw_raw"])
+            p_away = float(raw["p_away_raw"])
+
         predictions.append(
             BacktestPrediction(
                 match_id=int(row["match_id"]),
@@ -231,9 +252,9 @@ def run_backtest_from_rows(
                 p_home_raw=float(raw["p_home_raw"]),
                 p_draw_raw=float(raw["p_draw_raw"]),
                 p_away_raw=float(raw["p_away_raw"]),
-                p_home=float(calibrated["p_home"]),
-                p_draw=float(calibrated["p_draw"]),
-                p_away=float(calibrated["p_away"]),
+                p_home=p_home,
+                p_draw=p_draw,
+                p_away=p_away,
                 odds_home=float(row["odds_home"]),
                 odds_draw=float(row["odds_draw"]),
                 odds_away=float(row["odds_away"]),

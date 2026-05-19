@@ -61,10 +61,12 @@ def _make_minimal_report(n: int = 10) -> dict:
         "predictions": preds,
         "metrics": {
             "total_matches": n,
+            "n_ev_bets": 12,
+            "coverage_pct": 0.75,
             "brier_score": 0.20,
             "hit_rate": 0.52,
             "roi": -0.03,
-            "max_drawdown": 5.0,
+            "max_drawdown_units": 5.0,
             "sharpe_ratio": -0.3,
             "calibration_diagnostics": {},
         },
@@ -306,7 +308,7 @@ def test_daily_pnl_df_only_betting_days() -> None:
 def test_metrics_summary_keys() -> None:
     report = _make_minimal_report()
     summary = metrics_summary(report)
-    for key in ("比赛场次", "Brier 分", "命中率", "ROI", "最大回撤", "夏普比率"):
+    for key in ("比赛场次", "正期望下注", "覆盖率", "Brier 分", "命中率", "ROI", "最大回撤(注)", "夏普比率"):
         assert key in summary
 
 
@@ -315,6 +317,7 @@ def test_metrics_summary_formats() -> None:
     summary = metrics_summary(report)
     assert "%" in summary["命中率"]
     assert "%" in summary["ROI"]
+    assert "%" in summary["覆盖率"]
 
 
 # ──────────────────────────────────────────────

@@ -2,85 +2,83 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+from scipy.optimize import minimize
+from scipy.special import expit
+
 from interfaces.contracts import CalibratedPrediction, MatchFeatures, ModelRawOutput, validate_calibrated_prediction
 
 
-class _StepIsotonic:
+def _safe_logit(p: np.ndarray) -> np.ndarray:
+    """logit，输入约束在 (1e-6, 1-1e-6) 防止 log(0)。"""
+    p_clipped = np.clip(p, 1e-6, 1.0 - 1e-6)
+    return np.log(p_clipped / (1.0 - p_clipped))
+
+
+class _PlattCalibrator:
+    """单方向 Platt 缩放：p_cal = sigmoid(a * logit(p_raw) + b)。
+
+    只有 2 个参数，在小样本（单赛季约 300~400 场）下不易过拟合。
+    相比同位回归（Isotonic）的优势：
+    - 无边界外推跳变：超出训练概率范围的值经 sigmoid 自然平滑处理
+    - 参数少：不会把验证集某区间的极端偶发结果直接映射为极端概率
+    """
+
     def __init__(self) -> None:
-        self._x: list[float] = []
-        self._y: list[float] = []
+        self._a: float = 1.0  # 对数赔率缩放因子（逆温度）
+        self._b: float = 0.0  # 偏置（系统性偏差修正）
 
     def fit(self, x: list[float], y: list[float]) -> None:
         if len(x) != len(y) or not x:
-            raise ValueError("同位回归输入非法")
-        pairs = sorted((float(px), float(py)) for px, py in zip(x, y, strict=True))
-        x_vals = [p[0] for p in pairs]
-        y_vals = [p[1] for p in pairs]
-        n = len(y_vals)
+            raise ValueError("校准输入非法")
 
-        blocks = []
-        for idx in range(n):
-            blocks.append({"start": idx, "end": idx, "sum": y_vals[idx], "count": 1})
-            while len(blocks) >= 2:
-                left = blocks[-2]
-                right = blocks[-1]
-                left_mean = left["sum"] / left["count"]
-                right_mean = right["sum"] / right["count"]
-                if left_mean <= right_mean:
-                    break
-                merged = {
-                    "start": left["start"],
-                    "end": right["end"],
-                    "sum": left["sum"] + right["sum"],
-                    "count": left["count"] + right["count"],
-                }
-                blocks.pop()
-                blocks.pop()
-                blocks.append(merged)
+        x_arr = np.array(x, dtype=float)
+        y_arr = np.array(y, dtype=float)
+        logit_x = _safe_logit(x_arr)
 
-        fitted_y = [0.0] * n
-        for block in blocks:
-            value = block["sum"] / block["count"]
-            for idx in range(block["start"], block["end"] + 1):
-                fitted_y[idx] = value
+        def neg_log_loss(params: np.ndarray) -> float:
+            a, b = params
+            p = np.clip(expit(a * logit_x + b), 1e-9, 1.0 - 1e-9)
+            return -float(np.mean(y_arr * np.log(p) + (1.0 - y_arr) * np.log(1.0 - p)))
 
-        self._x = x_vals
-        self._y = fitted_y
+        # 对 b 加 L2 正则（λ=2.0），防止单赛季偏移过拟合：
+        # b 过大会系统性抬高/压低所有预测，转移到测试集时方向不确定
+        l2_lambda = 2.0
+
+        def penalized_neg_log_loss(params: np.ndarray) -> float:
+            return neg_log_loss(params) + l2_lambda * params[1] ** 2
+
+        result = minimize(
+            penalized_neg_log_loss,
+            x0=np.array([1.0, 0.0]),
+            method="L-BFGS-B",
+            options={"maxiter": 500, "ftol": 1e-10},
+        )
+        self._a, self._b = float(result.x[0]), float(result.x[1])
 
     def predict_one(self, value: float) -> float:
-        if not self._x:
-            raise RuntimeError("回归器未训练")
-        x = float(value)
-        if x <= self._x[0]:
-            return self._y[0]
-        if x >= self._x[-1]:
-            return self._y[-1]
+        logit_v = float(_safe_logit(np.array([value]))[0])
+        return float(expit(self._a * logit_v + self._b))
 
-        lo = 0
-        hi = len(self._x) - 1
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            if self._x[mid] <= x < self._x[mid + 1]:
-                return self._y[mid]
-            if x < self._x[mid]:
-                hi = mid - 1
-            else:
-                lo = mid + 1
-        return self._y[-1]
-
-    def get_params(self) -> dict[str, list[float]]:
-        return {"x": self._x, "y": self._y}
+    def get_params(self) -> dict[str, float]:
+        return {"a": self._a, "b": self._b}
 
     def load_params(self, params: dict[str, Any]) -> None:
-        self._x = [float(v) for v in params["x"]]
-        self._y = [float(v) for v in params["y"]]
+        self._a = float(params["a"])
+        self._b = float(params["b"])
 
 
-class IsotonicThreeWayCalibrator:
+class PlattThreeWayCalibrator:
+    """三分类 Platt 缩放校准器。
+
+    对主胜、平局、客胜三个方向各自独立拟合 Platt 缩放，
+    再做归一化确保三概率之和为 1。
+    """
+
     def __init__(self) -> None:
-        self._home = _StepIsotonic()
-        self._draw = _StepIsotonic()
-        self._away = _StepIsotonic()
+        self._home = _PlattCalibrator()
+        self._draw = _PlattCalibrator()
+        self._away = _PlattCalibrator()
         self._fitted = False
 
     def fit(self, raw_outputs: list[ModelRawOutput], outcomes: list[str]) -> None:
@@ -162,3 +160,7 @@ class IsotonicThreeWayCalibrator:
         if total <= 0:
             return 1 / 3, 1 / 3, 1 / 3
         return home / total, draw / total, away / total
+
+
+# 向后兼容别名：engine.py / train.py / predict.py 中的旧名称无需修改
+IsotonicThreeWayCalibrator = PlattThreeWayCalibrator

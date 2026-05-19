@@ -99,6 +99,33 @@ def test_dc_probability_sum() -> None:
     assert abs(total - 1.0) < 1e-6
 
 
+def test_dc_form_features_change_prediction() -> None:
+    """OPT-01 验收：form/momentum/fatigue 特征对预测概率有实际影响。"""
+    model = DixonColesModel()
+    payload = [dict(r, cutoff_date="2023-06-01") for r in _synthetic_rows()]
+    model.fit(payload, "E0")
+
+    base_features = _make_features(match_id=1, home_team=1, away_team=2)
+
+    # 连胜主队（form=1.0, momentum=0.10）vs 基准
+    winning_features = dict(base_features, home_form_5=1.0, home_momentum=0.10)
+    # 连败主队（form=-1.0, momentum=-0.10, 高疲劳）
+    losing_features = dict(base_features, home_form_5=-1.0, home_momentum=-0.10, home_fatigue=0.8)
+
+    base   = model.predict(base_features)
+    winning = model.predict(winning_features)
+    losing  = model.predict(losing_features)
+
+    # 连胜主队的主胜概率应高于基准
+    assert winning["p_home_raw"] > base["p_home_raw"], "连胜主队主胜概率应高于基准"
+    # 连败高疲劳主队的主胜概率应低于基准
+    assert losing["p_home_raw"] < base["p_home_raw"], "连败主队主胜概率应低于基准"
+    # 所有概率仍合法（和为1）
+    for raw in (base, winning, losing):
+        total = raw["p_home_raw"] + raw["p_draw_raw"] + raw["p_away_raw"]
+        assert abs(total - 1.0) < 1e-6
+
+
 def test_dc_low_score_correction() -> None:
     lambda_home = 1.2
     lambda_away = 1.0
@@ -153,7 +180,7 @@ def test_e2e_synthetic_backtest() -> None:
         val_season="2022-23",
         test_season="2023-24",
     )
-    assert result.model_version == "dixon_coles_v1"
+    assert result.model_version == "dixon_coles_v2"
     assert len(result.predictions) > 0
     metrics = compute_metrics(result)
     assert "calibration_diagnostics" in metrics
