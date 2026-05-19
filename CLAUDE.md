@@ -6,13 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 足球量化分析系统，覆盖欧洲五大联赛（EPL/LaLiga/Bundesliga/SerieA/Ligue1）与 2026 FIFA 世界杯。核心目标：通过概率模型识别正期望场次，系统化生成最优多串场组合，最大化期望收益。
 
-**当前进度**：所有 Phase 1~6 均已完成并通过测试（151 tests passed）。
+**当前进度**：所有 Phase 1~6 均已完成并通过测试（152 tests passed）。
 - Phase 1：数据管道（collectors / processors / storage）✅
-- Phase 2：Dixon-Coles 基础模型 + Isotonic 校准 ✅
+- Phase 2：Dixon-Coles v2 模型（含 form/fatigue 状态修正）+ Platt 校准 ✅
 - Phase 3：串场优化器（正期望筛选 / 三层串场 / 系统投注）✅
-- Phase 4：资金分配（Half Kelly / 止损）+ 完整回测 ✅
+- Phase 4：资金分配（Half Kelly / 止损）+ Flat Stake 回测指标 ✅
 - Phase 5：世界杯 Elo 模型 + 俱乐部状态辅助 ✅
 - Phase 6：Streamlit 仪表板（推荐 / 赔率分析 / 回测报告）✅
+- OPT-01：form/momentum/fatigue 特征接入 Dixon-Coles λ 修正 ✅
+- OPT-C1：Platt 缩放替换 Isotonic 校准，加 L2 正则防单赛季过拟合 ✅
+- OPT-C2：指标体系重写为 Flat Stake + EV≥1.05 筛选策略 ✅
 
 ## 常用命令
 
@@ -45,10 +48,17 @@ python3 -m data.collectors.odds <csv_path> --league-id E0 --bookmaker bet365 --s
 # 训练 Dixon-Coles 模型（Phase 2）
 python3 scripts/train.py --league E0 --train-seasons 2018-19,2019-20,2020-21,2021-22 --val-season 2022-23
 
-# 运行回测，输出报告到 reports/
+# 运行回测（单个联赛，使用最优超参）
 python3 scripts/backtest.py --league E0 \
   --train-seasons 2018-19,2019-20,2020-21,2021-22 \
-  --val-season 2022-23 --test-season 2024-25
+  --val-season 2022-23 --test-season 2023-24 \
+  --form-weight 0.16 --fatigue-weight 0.10 --skip-calibration
+
+# 五大联赛批量回测（使用验证集搜索得到的最优超参）
+python3 scripts/run_all_backtests.py
+
+# 验证集超参搜索（form_weight × fatigue_weight 网格搜索）
+python3 scripts/grid_search_weights.py
 
 # Phase 1 完整端到端验收
 bash scripts/run_phase1_e2e.sh <csv_path> --league-id E0 --season 2024-25 --bookmaker bet365
@@ -91,7 +101,7 @@ MatchFeatures → ModelRawOutput → CalibratedPrediction → ParlayPlan → Bet
 | `data/collectors/` | historical.py（历史赛果）、odds.py（赔率采集） |
 | `data/processors/` | form_score、fatigue、injury、odds_anomaly 四个处理器 |
 | `data/storage/` | SQLAlchemy ORM（models.py）+ Alembic 迁移（migrations/） |
-| `models/` | dixon_coles.py（当前主模型）、calibration.py（Isotonic 校准） |
+| `models/` | dixon_coles.py（Dixon-Coles v2，含 form/fatigue 修正）、calibration.py（Platt 校准） |
 | `backtest/` | engine.py + metrics.py + report.py |
 | `scripts/` | 各阶段入口脚本，用 `PYTHONPATH=$(pwd)` 运行 |
 

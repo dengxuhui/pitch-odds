@@ -4,7 +4,7 @@
 
 核心目标：通过概率模型识别正期望场次，系统化生成最优多串场组合，最大化期望收益。
 
-![Python](https://img.shields.io/badge/Python-3.11+-blue) ![Tests](https://img.shields.io/badge/tests-151%20passed-brightgreen) ![License](https://img.shields.io/badge/license-MIT-green)
+![Python](https://img.shields.io/badge/Python-3.11+-blue) ![Tests](https://img.shields.io/badge/tests-152%20passed-brightgreen) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -13,7 +13,7 @@
 | 模块 | 说明 |
 |---|---|
 | **数据采集** | 历史赛果、开盘赔率、球队状态（伤病 / 疲劳 / 近期表现） |
-| **概率模型** | Dixon-Coles 泊松模型 + Isotonic Regression 校准 |
+| **概率模型** | Dixon-Coles v2（form/fatigue λ 修正）+ Platt Scaling 校准 |
 | **世界杯模型** | Elo 评分 + 俱乐部状态辅助（2026 FIFA World Cup） |
 | **串场优化器** | 正期望筛选 → 三层串场策略（保底 / 核心 / 冲击） |
 | **资金分配** | Half Kelly 公式 + 单日止损 / 连亏止损 / 总回撤保护 |
@@ -127,34 +127,40 @@ python3 scripts/train.py --league E0 \
   --val-season 2023-24
 ```
 
-### 4. 运行回测
+### 4. 超参搜索（可选）
 
 ```bash
-# 单个联赛（--league 支持 E0 / SP1 / D1 / I1 / F1，默认 E0）
-python3 scripts/backtest.py --league E0 \
-  --train-seasons 2018-19,2019-20,2020-21,2021-22,2022-23 \
-  --val-season 2023-24 --test-season 2024-25
+# 在验证集上搜索最优 form_weight × fatigue_weight（约 5 分钟）
+python3 scripts/grid_search_weights.py
+```
 
-# 五大联赛批量回测
-for league in E0 SP1 D1 I1 F1; do
-  python3 scripts/backtest.py --league "$league" \
-    --train-seasons 2018-19,2019-20,2020-21,2021-22,2022-23 \
-    --val-season 2023-24 --test-season 2024-25
-done
+### 5. 运行回测
+
+```bash
+# 单个联赛（指定最优超参）
+python3 scripts/backtest.py --league E0 \
+  --train-seasons 2018-19,2019-20,2020-21,2021-22 \
+  --val-season 2022-23 --test-season 2023-24 \
+  --form-weight 0.16 --fatigue-weight 0.10 --skip-calibration
+
+# 五大联赛一键批量回测（使用验证集搜索最优超参）
+python3 scripts/run_all_backtests.py
 # 报告输出至 reports/backtest_<LEAGUE>_<TIMESTAMP>.json
 ```
 
-回测指标说明：
+回测指标说明（Flat Stake = 1 unit 策略）：
 
 | 指标 | 含义 |
 |---|---|
-| `brier_score` | 概率误差，越低越好 |
+| `brier_score` | 概率误差，越低越好（基准≈0.222，目标≤0.200） |
 | `hit_rate` | 最高概率结果的预测准确率 |
-| `roi` | 平注策略回报率（反映模型纯预测能力） |
-| `max_drawdown` | 最大回撤（单位：注） |
+| `n_ev_bets` | EV≥1.05 的注押场次数 |
+| `coverage_pct` | 有注场次 / 总场次比例 |
+| `roi` | 固定注金策略累计回报率 |
+| `max_drawdown_units` | 最大回撤（单位：注） |
 | `sharpe_ratio` | 风险调整收益 |
 
-### 5. Web 端分析
+### 6. Web 端分析
 
 ```bash
 streamlit run dashboard/app.py
@@ -165,7 +171,7 @@ streamlit run dashboard/app.py
 ### 运行测试
 
 ```bash
-python3 -m pytest          # 全部测试（151 tests）
+python3 -m pytest          # 全部测试（152 tests）
 python3 -m pytest -v       # 带详情
 ```
 
@@ -185,7 +191,7 @@ interfaces/
   contracts.py      # 所有模块间 TypedDict 接口定义
 models/
   dixon_coles.py    # Dixon-Coles 泊松模型
-  calibration.py    # Isotonic Regression 校准
+  calibration.py    # Platt Scaling 校准（带 L2 正则）
 optimizer/          # EV 筛选 / 串场优化 / 系统投注
 capital/            # Half Kelly / 资金分配 / 止损
 backtest/           # 回测引擎 / 指标 / 报告

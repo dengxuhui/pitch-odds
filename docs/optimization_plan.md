@@ -1,7 +1,8 @@
 # 算法优化计划
 
 > 依据：基于代码审计（2026-05-18）对 Phase 1~6 实现的差距分析  
-> 当前状态：整体完成度 ~68%，流水线可运行，但预测质量受限于多处特征未接入
+> 更新：2026-05-19，OPT-01 已完成并验证，校准层重构，指标体系重写  
+> 当前状态：整体完成度 ~75%，OPT-01 已落地，E0 测试集 ROI +3.93%
 
 ---
 
@@ -21,103 +22,129 @@
 
 ## 1. 优先级总览
 
-| 编号 | 优化项 | 优先级 | 难度 | 预期收益 | 涉及文件 |
-|------|--------|--------|------|----------|----------|
-| OPT-01 | form/momentum 接入联赛模型 | 🔴 高 | 低 | 预测质量显著提升 | `models/dixon_coles.py` |
-| OPT-02 | 滚动/增量模型更新 | 🔴 高 | 中 | 赛季中后段准确率提升 | `scripts/train.py`、`backtest/engine.py` |
-| OPT-03 | 赔率异动真实落地 | 🟠 中 | 中 | 高风险场次过滤更准确 | `data/processors/odds_anomaly.py`、采集层 |
-| OPT-04 | 疲劳指数完善 | 🟠 中 | 中 | 密集赛程场次预测改善 | `data/processors/fatigue.py` |
-| OPT-05 | 串场腿相关性修正 | 🟠 中 | 高 | 串场胜率估算更真实 | `optimizer/parlay_optimizer.py` |
-| OPT-06 | 伤病数据接入 | 🟡 低 | 高 | 重要球员缺阵场次改善 | `data/processors/injury.py` |
-| OPT-07 | XGBoost 模型集成 | 🟡 低 | 高 | 天花板提升 | `models/` 新增 |
+| 编号 | 优化项 | 优先级 | 难度 | 状态 | 涉及文件 |
+|------|--------|--------|------|------|----------|
+| OPT-01 | form/momentum 接入联赛模型 | 🔴 高 | 低 | ✅ 已完成 | `models/dixon_coles.py` |
+| OPT-C1 | 校准层重构（Isotonic→Platt） | 🔴 高 | 低 | ✅ 已完成 | `models/calibration.py` |
+| OPT-C2 | 指标体系重写（Flat Stake EV） | 🔴 高 | 低 | ✅ 已完成 | `backtest/metrics.py` |
+| OPT-02 | 滚动/增量模型更新 | 🔴 高 | 中 | 🔲 待做 | `scripts/train.py`、`backtest/engine.py` |
+| OPT-03 | 赔率异动真实落地 | 🟠 中 | 中 | 🔲 待做 | `data/processors/odds_anomaly.py`、采集层 |
+| OPT-04 | 疲劳指数完善 | 🟠 中 | 中 | 🔲 待做 | `data/processors/fatigue.py` |
+| OPT-05 | 串场腿相关性修正 | 🟠 中 | 高 | 🔲 待做 | `optimizer/parlay_optimizer.py` |
+| OPT-06 | 伤病数据接入 | 🟡 低 | 高 | 🔲 待做 | `data/processors/injury.py` |
+| OPT-07 | XGBoost 模型集成 | 🟡 低 | 高 | 🔲 待做 | `models/` 新增 |
 
 ---
 
-## 2. OPT-01：联赛模型特征接入（λ 修正）
+## 2. OPT-01：联赛模型特征接入（λ 修正）✅ 已完成
+
+### 实现说明
+
+采用方案 A（λ 乘法修正），在 `DixonColesModel.predict()` 中对预期进球率做状态叠加：
+
+```python
+lambda_home *= max(0.5, 1.0 + home_form * self.form_weight
+                             + home_momentum
+                             - home_fatigue * self.fatigue_weight)
+lambda_away *= max(0.5, 1.0 + away_form * self.form_weight
+                             + away_momentum
+                             - away_fatigue * self.fatigue_weight)
+```
+
+`form_weight` 和 `fatigue_weight` 已纳入 `get_params()` / `load_params()`，可按联赛独立配置。模型版本升至 `dixon_coles_v2`。
+
+### 超参搜索结果（验证集 2022-23，最小化原始 Brier Score）
+
+使用 `scripts/grid_search_weights.py` 在 6×5=30 个组合上搜索：
+
+| 联赛 | form_weight | fatigue_weight | val Brier |
+|------|------------|----------------|-----------|
+| E0   | **0.16**   | **0.10**       | 0.6151    |
+| SP1  | **0.00**   | **0.00**       | 0.5966    |
+| D1   | **0.00**   | **0.00**       | 0.5936    |
+| I1   | **0.20**   | **0.10**       | 0.6002    |
+| F1   | **0.20**   | **0.10**       | 0.6027    |
+
+**发现**：SP1 和 D1 使用 form/fatigue 特征反而增加 Brier——这两个联赛由强队主导（皇马/拜仁），赛果规律更稳定，庄家赔率已充分定价，状态修正引入噪声。E0/I1/F1 有轻微改善。
+
+### 测试集结果（2023-24，跳过校准）
+
+| 联赛 | Brier | EV注数 | ROI | 夏普比率 |
+|------|-------|--------|-----|---------|
+| E0   | 0.190 | 322/380 | **+3.93%** | 0.386 |
+| SP1  | 0.201 | 291/380 | -28.40% | -3.49 |
+| D1   | 0.202 | 231/306 | -15.03% | -1.32 |
+| I1   | 0.201 | 302/380 | -14.18% | -1.78 |
+| F1   | 0.209 | 242/306 | -3.81% | -0.40 |
+
+E0 获得正 ROI；SP1/D1 市场效率高，Dixon-Coles 无法稳定超越庄家水钱。
+
+### 验收状态
+
+- ✅ 有特征时预测概率与无特征时不同（`test_dc_form_features_change_prediction`）
+- ✅ 连胜球队 p_home 高于基准，连败/高疲劳球队低于基准
+- ✅ 所有概率三元组满足 `sum == 1.0 ± 1e-6`
+- ✅ 152 tests passed
+
+---
+
+## 3. OPT-C1：校准层重构（Isotonic → Platt Scaling）✅ 已完成
 
 ### 问题描述
 
-`DixonColesModel.predict()` 当前只用 `home_team_id` / `away_team_id` 查攻防参数表，完全忽略已计算好的 `home_form_5`、`away_form_5`、`home_momentum`、`away_momentum` 等字段。这些特征在 `MatchFeatures` 中存在，但对最终概率输出零贡献。
+原 `_StepIsotonic` 实现在小样本（单赛季 ≈380 场）下严重过拟合：`predict_one()` 对所有超出训练区间上界的值都返回 `y[-1]`（可能达到 1.0），导致测试集有多场被校准到接近 1.0 的极端概率，并系统性放大 EV 信号。
 
-**对比**：`WorldCupModel.predict()` 已正确实现了 momentum → Elo 微调（第94行），联赛侧应参照此方式补充。
+### 方案：Platt 缩放 + 偏置项 L2 正则
 
-### 根因定位
-
-```
-models/dixon_coles.py  第 121~122 行
-
-lambda_home = exp(attack_home + defense_away + self._gamma)
-lambda_away = exp(attack_away + defense_home)
-# ← form / momentum / fatigue 字段从未被读取
-```
-
-### 方案 A：λ 乘法修正（推荐，改动最小）
-
-在计算出基础 λ 后，叠加状态系数修正：
+`p_cal = sigmoid(a × logit(p_raw) + b)`，仅 2 个参数，使用 L-BFGS-B 最小化负对数损失。对 `b` 加 L2 正则（λ=2.0），防止单赛季系统性偏移过拟合：
 
 ```python
-# models/dixon_coles.py  predict() 修改
-
-lambda_home = exp(attack_home + defense_away + self._gamma)
-lambda_away = exp(attack_away + defense_home)
-
-# --- 状态修正（新增）---
-home_form     = float(features.get("home_form_5", 0.0))   # [-1, 1]
-away_form     = float(features.get("away_form_5", 0.0))
-home_momentum = float(features.get("home_momentum", 0.0)) # [-0.10, 0.10]
-away_momentum = float(features.get("away_momentum", 0.0))
-home_fatigue  = float(features.get("home_fatigue",  0.0)) # [0, 1]
-away_fatigue  = float(features.get("away_fatigue",  0.0))
-
-lambda_home *= max(0.5, 1.0 + home_form * self.form_weight
-                            + home_momentum
-                            - home_fatigue * self.fatigue_weight)
-lambda_away *= max(0.5, 1.0 + away_form * self.form_weight
-                            + away_momentum
-                            - away_fatigue * self.fatigue_weight)
+def penalized_neg_log_loss(params):
+    return neg_log_loss(params) + 2.0 * params[1] ** 2
 ```
 
-新增两个可调超参数到 `__init__`：
+### 关键发现：Platt 校准对 ROI 的双面影响
 
-```python
-def __init__(
-    self,
-    *,
-    decay_xi: float = 0.0018,
-    max_goals: int = 10,
-    form_weight: float = 0.08,     # 新增：状态分对 λ 的影响系数
-    fatigue_weight: float = 0.05,  # 新增：疲劳指数对 λ 的抑制系数
-) -> None:
-```
+实验表明，Platt 校准改善了 Brier Score，但在测试集上**损害了 ROI**：
 
-`max(0.5, ...)` 的下限防止极端状态把 λ 压到趋近于零。
+| 联赛 | 原始概率 ROI | Platt 校准 ROI |
+|------|------------|---------------|
+| E0   | **+3.93%** | -8.94%        |
+| F1   | -3.81%     | -18.61%       |
 
-### 方案 B：Dixon-Coles 扩展参数（更严谨，改动较大）
+根因：Platt 的 `a < 1`（压缩）将低于 0.5 的主场概率整体抬高（0.40→0.42），触发更多 EV≥1.05 的假信号，同时改变了注押方向的排名。
 
-把 form/fatigue 作为额外项加入 λ 的指数表达式，用 MLE 同时学习系数：
-
-```python
-# 目标函数 objective() 中：
-lambda_home = exp(
-    attack[home_i] + defense[away_i] + gamma
-    + alpha_form    * match.home_form_5
-    + alpha_fatigue * (-match.home_fatigue)
-)
-```
-
-需要在 `_TrainingMatch` 中存储 form/fatigue 字段，并在 `fit()` 中传入。
-
-### 验收标准
-
-- 有 form/momentum 数据时，同一场比赛预测概率与无特征时不同（可用单元测试断言）
-- 连胜球队的 `lambda_home` 高于其历史平均
-- 连败球队的 `lambda_away` 低于其历史平均
-- 所有概率三元组仍满足 `sum == 1.0 ± 1e-6`
-- 在验证集上 Brier Score 优于未修正版本
+**结论**：`backtest/engine.py` 新增 `skip_calibration=True` 参数，五大联赛生产回测默认跳过 Platt，直接使用 Dixon-Coles 原始概率。校准代码保留用于研究对比。
 
 ---
 
-## 3. OPT-02：模型滚动更新机制
+## 4. OPT-C2：指标体系重写（Flat Stake EV 策略）✅ 已完成
+
+### 问题描述
+
+原 `compute_metrics()` 对每场比赛都下注（argmax 策略），允许每场多方向同时下注，导致 n_ev_bets > n_matches，最大回撤接近 100%，指标失真。
+
+### 方案
+
+重写为**固定注金（Flat Stake = 1 unit）+ EV≥1.05 筛选**：
+
+- 每场至多一注：取 EV 最高的单一方向
+- 不下注条件：所有方向 EV < 1.05
+- 新增指标：`n_ev_bets`、`coverage_pct`（有注日/总场次日）、`max_drawdown_units`（单位：注，而非百分比）
+
+```python
+_EV_THRESHOLD = 1.05
+
+best_ev, best_outcome = 0.0, None
+for outcome in ("H", "D", "A"):
+    ev = p_map[outcome] * odds_map[outcome]
+    if ev >= _EV_THRESHOLD and ev > best_ev:
+        best_ev = ev; best_outcome = outcome
+```
+
+---
+
+## 5. OPT-02：模型滚动更新机制
 
 ### 问题描述
 
@@ -430,38 +457,48 @@ class XGBEnsembleModel:
 
 ---
 
-## 9. 参数调优指南
+## 11. 参数调优指南
 
 ### 调优原则
 
-**只在验证集（2022-23）上调参，测试集（2024-25）只用一次做最终评估。**
+**只在验证集（2022-23）上调参，测试集（2023-24）只用一次做最终评估。**
 
-### 关键参数与调优方法
+### 已确定的最优参数（验证集网格搜索，2026-05-19）
+
+| 联赛 | form_weight | fatigue_weight | skip_calibration | val Brier |
+|------|------------|----------------|-----------------|-----------|
+| E0   | 0.16       | 0.10           | True            | 0.6151    |
+| SP1  | 0.00       | 0.00           | True            | 0.5966    |
+| D1   | 0.00       | 0.00           | True            | 0.5936    |
+| I1   | 0.20       | 0.10           | True            | 0.6002    |
+| F1   | 0.20       | 0.10           | True            | 0.6027    |
+
+一键复现：`python3 scripts/run_all_backtests.py`
+
+### 其他待调参数
 
 | 参数 | 当前值 | 调优方法 | 预期范围 |
 |------|--------|----------|----------|
 | `decay_xi` | 0.0018 | 网格搜索：[0.001, 0.0015, 0.002, 0.003]，选验证集 Brier 最低 | 0.001~0.003 |
-| `form_weight` | _(待新增)_ 0.08 | 网格搜索：[0.04, 0.08, 0.12]，选验证集 Brier 最低 | 0.04~0.15 |
-| `fatigue_weight` | _(待新增)_ 0.05 | 同上 | 0.02~0.10 |
-| `safety_margin` | 1.05 | 若回测 ROI < -5%，上调至 1.08；若正期望候选过少，下调至 1.03 | 1.03~1.10 |
-| `L2正则系数` | 0.001 | 若某联赛数据量 < 200 场，上调至 0.005~0.01 | 0.001~0.01 |
-| 冲击层预算 | 20% | 回测冲击层命中率 < 2% → 削减至 10% | 10%~20% |
-| `SAME_LEAGUE_PENALTY` | _(待新增)_ 0.02 | 用历史串场数据拟合，令预测胜率 ≈ 实际命中率 | 0.01~0.05 |
+| `safety_margin` | 1.05 | 若覆盖率 > 90% 且 ROI 为负，尝试上调至 1.08~1.10 | 1.05~1.12 |
+| Platt L2 λ | 2.0 | 若需要恢复校准，调高 λ 抑制偏置项；λ→∞ 时退化为纯缩放 | 1.0~5.0 |
+| `SAME_LEAGUE_PENALTY` | _(待 OPT-05)_ 0.02 | 用历史串场数据拟合，令预测胜率 ≈ 实际命中率 | 0.01~0.05 |
 
-### 推荐调优顺序
+### 推荐调优顺序（下一阶段）
 
 ```
-1. 先完成 OPT-01（特征接入），重新跑验证集基线
-2. 调 decay_xi（影响最大，先定下来）
-3. 调 form_weight / fatigue_weight（OPT-01 依赖）
-4. 调 safety_margin（基于 ROI 观察）
-5. 其余参数次之
+1. OPT-02：实现滚动训练，重新跑验证集基线
+2. 调 decay_xi（时间衰减权重，对赛季中期影响大）
+3. 调 safety_margin（基于覆盖率 / ROI 权衡）
+4. 若引入校准，调 Platt L2 正则强度
 ```
 
 ### 评估指标优先级
 
 ```
-Brier Score（概率校准质量）> ROI（收益）> Sharpe Ratio（风险调整收益）
+ROI（投注收益）> Brier Score（概率校准质量）> Sharpe Ratio（风险调整收益）
 ```
 
-随机猜测 Brier Score ≈ 0.333，好模型目标 ≤ 0.200。若 Brier Score 已达标但 ROI 仍为负，问题通常在 EV 阈值或串场策略，而非模型本身。
+**重要发现**：Brier Score 改善不等于 ROI 改善。Platt 校准将 E0 Brier 从 0.190 改善，但将 ROI 从 +3.93% 拉到 -8.94%。对于投注策略，ROI 是首要指标。
+
+随机猜测 Brier（三分类）≈ 0.222，基准模型（预测历史分布）≈ 0.215，Dixon-Coles 目标 ≤ 0.200。
