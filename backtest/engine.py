@@ -147,6 +147,8 @@ def run_backtest(
     form_weight: float = 0.08,
     fatigue_weight: float = 0.05,
     skip_calibration: bool = False,
+    rolling: bool = False,
+    retrain_every: int = 10,
 ) -> BacktestResult:
     rows = _load_match_rows(session, league_id, train_seasons + [val_season, test_season])
     return run_backtest_from_rows(
@@ -158,6 +160,8 @@ def run_backtest(
         form_weight=form_weight,
         fatigue_weight=fatigue_weight,
         skip_calibration=skip_calibration,
+        rolling=rolling,
+        retrain_every=retrain_every,
     )
 
 
@@ -194,6 +198,8 @@ def run_backtest_from_rows(
     form_weight: float = 0.08,
     fatigue_weight: float = 0.05,
     skip_calibration: bool = False,
+    rolling: bool = False,
+    retrain_every: int = 10,
 ) -> BacktestResult:
     _assert_season_order(train_seasons, val_season, test_season)
     enrich_rows_with_team_features(rows)
@@ -204,6 +210,48 @@ def run_backtest_from_rows(
     if not train_rows or not val_rows or not test_rows:
         raise ValueError("训练/验证/测试数据不完整")
 
+    if rolling:
+        predictions = _rolling_backtest(
+            train_rows=train_rows,
+            val_rows=val_rows,
+            test_rows=test_rows,
+            league_id=league_id,
+            form_weight=form_weight,
+            fatigue_weight=fatigue_weight,
+            skip_calibration=skip_calibration,
+            retrain_every=retrain_every,
+        )
+    else:
+        predictions = _static_backtest(
+            train_rows=train_rows,
+            val_rows=val_rows,
+            test_rows=test_rows,
+            league_id=league_id,
+            form_weight=form_weight,
+            fatigue_weight=fatigue_weight,
+            skip_calibration=skip_calibration,
+        )
+
+    return BacktestResult(
+        league_id=league_id,
+        model_version=DixonColesModel.model_version,
+        train_seasons=train_seasons,
+        val_season=val_season,
+        test_season=test_season,
+        predictions=predictions,
+    )
+
+
+def _static_backtest(
+    *,
+    train_rows: list[dict[str, Any]],
+    val_rows: list[dict[str, Any]],
+    test_rows: list[dict[str, Any]],
+    league_id: str,
+    form_weight: float,
+    fatigue_weight: float,
+    skip_calibration: bool,
+) -> list[BacktestPrediction]:
     model = DixonColesModel(form_weight=form_weight, fatigue_weight=fatigue_weight)
     train_until = max(_to_date(x["match_date"]) for x in train_rows)
     model.fit(_attach_cutoff(train_rows, train_until), league_id)
@@ -230,44 +278,111 @@ def run_backtest_from_rows(
             continue
         features = _build_features(row)
         raw = model.predict(features)
+        p_home, p_draw, p_away = _apply_calibrator(calibrator, raw, features)
+        predictions.append(_make_prediction(row, league_id, raw, p_home, p_draw, p_away, train_until))
 
-        if calibrator is not None:
-            calibrated = calibrator.calibrate(raw, features)
-            p_home = float(calibrated["p_home"])
-            p_draw = float(calibrated["p_draw"])
-            p_away = float(calibrated["p_away"])
-        else:
-            p_home = float(raw["p_home_raw"])
-            p_draw = float(raw["p_draw_raw"])
-            p_away = float(raw["p_away_raw"])
+    return predictions
 
-        predictions.append(
-            BacktestPrediction(
-                match_id=int(row["match_id"]),
-                league_id=league_id,
-                season=str(row["season"]),
-                match_date=str(row["match_date"]),
-                actual_outcome=str(row["result"]),
-                train_until=train_until.isoformat(),
-                p_home_raw=float(raw["p_home_raw"]),
-                p_draw_raw=float(raw["p_draw_raw"]),
-                p_away_raw=float(raw["p_away_raw"]),
-                p_home=p_home,
-                p_draw=p_draw,
-                p_away=p_away,
-                odds_home=float(row["odds_home"]),
-                odds_draw=float(row["odds_draw"]),
-                odds_away=float(row["odds_away"]),
-            )
+
+def _rolling_backtest(
+    *,
+    train_rows: list[dict[str, Any]],
+    val_rows: list[dict[str, Any]],
+    test_rows: list[dict[str, Any]],
+    league_id: str,
+    form_weight: float,
+    fatigue_weight: float,
+    skip_calibration: bool,
+    retrain_every: int,
+) -> list[BacktestPrediction]:
+    """Walk-forward 滚动训练：每 retrain_every 场比赛用增量数据重训一次模型。
+
+    窗口策略：growing window（保留所有历史数据），每批预测后将该批加入训练集。
+    cutoff 始终等于当前训练窗口最后一场的日期，保证预测时刻不引入未来数据。
+    """
+    sorted_test = sorted(
+        [r for r in test_rows if r.get("result") in {"H", "D", "A"}],
+        key=lambda x: _to_date(x["match_date"]),
+    )
+    batches = [sorted_test[i : i + retrain_every] for i in range(0, len(sorted_test), retrain_every)]
+
+    predictions: list[BacktestPrediction] = []
+    current_train = list(train_rows)
+
+    for batch in batches:
+        train_until = max(_to_date(x["match_date"]) for x in current_train)
+
+        # 安全检查：本批中不能包含已在训练集里的 match_id
+        train_ids = {int(r["match_id"]) for r in current_train}
+        assert not any(int(r["match_id"]) in train_ids for r in batch), (
+            "数据泄漏：滚动批次包含已用于训练的 match_id"
         )
 
-    return BacktestResult(
+        model = DixonColesModel(form_weight=form_weight, fatigue_weight=fatigue_weight)
+        model.fit(_attach_cutoff(current_train, train_until), league_id)
+
+        calibrator: IsotonicThreeWayCalibrator | None = None
+        if not skip_calibration:
+            calibrator = IsotonicThreeWayCalibrator()
+            val_raw, val_outcomes = [], []
+            for row in sorted(val_rows, key=lambda x: _to_date(x["match_date"])):
+                if row.get("result") not in {"H", "D", "A"}:
+                    continue
+                raw = model.predict(_build_features(row))
+                val_raw.append(raw)
+                val_outcomes.append(str(row["result"]))
+            if val_raw:
+                calibrator.fit(val_raw, val_outcomes)
+            else:
+                calibrator = None
+
+        for row in batch:
+            features = _build_features(row)
+            raw = model.predict(features)
+            p_home, p_draw, p_away = _apply_calibrator(calibrator, raw, features)
+            predictions.append(_make_prediction(row, league_id, raw, p_home, p_draw, p_away, train_until))
+
+        current_train.extend(batch)
+
+    return predictions
+
+
+def _apply_calibrator(
+    calibrator: IsotonicThreeWayCalibrator | None,
+    raw: Any,
+    features: MatchFeatures,
+) -> tuple[float, float, float]:
+    if calibrator is not None:
+        cal = calibrator.calibrate(raw, features)
+        return float(cal["p_home"]), float(cal["p_draw"]), float(cal["p_away"])
+    return float(raw["p_home_raw"]), float(raw["p_draw_raw"]), float(raw["p_away_raw"])
+
+
+def _make_prediction(
+    row: dict[str, Any],
+    league_id: str,
+    raw: Any,
+    p_home: float,
+    p_draw: float,
+    p_away: float,
+    train_until: date,
+) -> BacktestPrediction:
+    return BacktestPrediction(
+        match_id=int(row["match_id"]),
         league_id=league_id,
-        model_version=model.model_version,
-        train_seasons=train_seasons,
-        val_season=val_season,
-        test_season=test_season,
-        predictions=predictions,
+        season=str(row["season"]),
+        match_date=str(row["match_date"]),
+        actual_outcome=str(row["result"]),
+        train_until=train_until.isoformat(),
+        p_home_raw=float(raw["p_home_raw"]),
+        p_draw_raw=float(raw["p_draw_raw"]),
+        p_away_raw=float(raw["p_away_raw"]),
+        p_home=p_home,
+        p_draw=p_draw,
+        p_away=p_away,
+        odds_home=float(row["odds_home"]),
+        odds_draw=float(row["odds_draw"]),
+        odds_away=float(row["odds_away"]),
     )
 
 

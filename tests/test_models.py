@@ -185,3 +185,82 @@ def test_e2e_synthetic_backtest() -> None:
     metrics = compute_metrics(result)
     assert "calibration_diagnostics" in metrics
     assert "home" in metrics["calibration_diagnostics"]
+
+
+# ── OPT-02：Walk-Forward 滚动训练测试 ─────────────────────────────────────────
+
+def test_rolling_no_leakage() -> None:
+    """滚动模式下每条预测的 train_until 严格早于 match_date（无未来数据泄漏）。"""
+    rows = _synthetic_rows()
+    result = run_backtest_from_rows(
+        rows=rows,
+        league_id="E0",
+        train_seasons=["2018-19", "2019-20", "2020-21", "2021-22"],
+        val_season="2022-23",
+        test_season="2023-24",
+        rolling=True,
+        retrain_every=10,
+    )
+    assert result.predictions
+    for pred in result.predictions:
+        assert pred.train_until < pred.match_date, (
+            f"数据泄漏：train_until={pred.train_until} >= match_date={pred.match_date}"
+        )
+
+
+def test_rolling_train_until_monotone() -> None:
+    """滚动模式下 train_until 应单调不递减（每批重训后截止日期只增不减）。"""
+    rows = _synthetic_rows()
+    result = run_backtest_from_rows(
+        rows=rows,
+        league_id="E0",
+        train_seasons=["2018-19", "2019-20", "2020-21", "2021-22"],
+        val_season="2022-23",
+        test_season="2023-24",
+        rolling=True,
+        retrain_every=10,
+    )
+    dates = [pred.train_until for pred in result.predictions]
+    for i in range(1, len(dates)):
+        assert dates[i] >= dates[i - 1], (
+            f"train_until 不单调：位置 {i-1}={dates[i-1]}, {i}={dates[i]}"
+        )
+
+
+def test_rolling_vs_static_differ() -> None:
+    """滚动模式与静态模式的预测结果不同（滚动确实重训了模型）。"""
+    rows = _synthetic_rows()
+    kwargs = dict(
+        rows=rows,
+        league_id="E0",
+        train_seasons=["2018-19", "2019-20", "2020-21", "2021-22"],
+        val_season="2022-23",
+        test_season="2023-24",
+        skip_calibration=True,
+    )
+    static  = run_backtest_from_rows(**kwargs, rolling=False)
+    rolling = run_backtest_from_rows(**kwargs, rolling=True, retrain_every=10)
+
+    assert len(static.predictions) == len(rolling.predictions)
+    # 至少有若干场的概率不同（滚动后期会与静态出现分歧）
+    diffs = sum(
+        1 for s, r in zip(static.predictions, rolling.predictions)
+        if abs(s.p_home - r.p_home) > 1e-8
+    )
+    assert diffs > 0, "滚动模式与静态模式产生了完全相同的预测，说明重训未生效"
+
+
+def test_rolling_same_count_as_static() -> None:
+    """滚动模式的预测总场数与静态模式相同（无遗漏）。"""
+    rows = _synthetic_rows()
+    kwargs = dict(
+        rows=rows,
+        league_id="E0",
+        train_seasons=["2018-19", "2019-20", "2020-21", "2021-22"],
+        val_season="2022-23",
+        test_season="2023-24",
+        skip_calibration=True,
+    )
+    static  = run_backtest_from_rows(**kwargs, rolling=False)
+    rolling = run_backtest_from_rows(**kwargs, rolling=True, retrain_every=5)
+    assert len(static.predictions) == len(rolling.predictions)

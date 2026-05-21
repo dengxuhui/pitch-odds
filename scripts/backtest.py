@@ -31,6 +31,8 @@ def main() -> None:
     parser.add_argument("--form-weight", type=float, default=0.08, help="form/momentum 特征权重")
     parser.add_argument("--fatigue-weight", type=float, default=0.05, help="疲劳特征权重")
     parser.add_argument("--skip-calibration", action="store_true", help="跳过 Platt 校准，直接使用原始概率")
+    parser.add_argument("--rolling", action="store_true", help="启用 Walk-Forward 滚动训练模式")
+    parser.add_argument("--retrain-every", type=int, default=10, help="滚动模式：每隔多少场比赛重训一次（默认 10）")
     args = parser.parse_args()
 
     train_seasons = _parse_csv_items(args.train_seasons)
@@ -44,6 +46,8 @@ def main() -> None:
             form_weight=args.form_weight,
             fatigue_weight=args.fatigue_weight,
             skip_calibration=args.skip_calibration,
+            rolling=args.rolling,
+            retrain_every=args.retrain_every,
         )
 
     metrics = compute_metrics(result)

@@ -1,8 +1,8 @@
 # 算法优化计划
 
 > 依据：基于代码审计（2026-05-18）对 Phase 1~6 实现的差距分析  
-> 更新：2026-05-19，OPT-01 已完成并验证，校准层重构，指标体系重写  
-> 当前状态：整体完成度 ~75%，OPT-01 已落地，E0 测试集 ROI +3.93%
+> 更新：2026-05-21，OPT-02 Walk-Forward 滚动训练已完成并验证  
+> 当前状态：整体完成度 ~85%，OPT-01/C1/C2/02 已落地，E0 静态 ROI +3.93%
 
 ---
 
@@ -27,7 +27,7 @@
 | OPT-01 | form/momentum 接入联赛模型 | 🔴 高 | 低 | ✅ 已完成 | `models/dixon_coles.py` |
 | OPT-C1 | 校准层重构（Isotonic→Platt） | 🔴 高 | 低 | ✅ 已完成 | `models/calibration.py` |
 | OPT-C2 | 指标体系重写（Flat Stake EV） | 🔴 高 | 低 | ✅ 已完成 | `backtest/metrics.py` |
-| OPT-02 | 滚动/增量模型更新 | 🔴 高 | 中 | 🔲 待做 | `scripts/train.py`、`backtest/engine.py` |
+| OPT-02 | 滚动/增量模型更新 | 🔴 高 | 中 | ✅ 已完成 | `backtest/engine.py`、`scripts/compare_rolling.py` |
 | OPT-03 | 赔率异动真实落地 | 🟠 中 | 中 | 🔲 待做 | `data/processors/odds_anomaly.py`、采集层 |
 | OPT-04 | 疲劳指数完善 | 🟠 中 | 中 | 🔲 待做 | `data/processors/fatigue.py` |
 | OPT-05 | 串场腿相关性修正 | 🟠 中 | 高 | 🔲 待做 | `optimizer/parlay_optimizer.py` |
@@ -144,59 +144,48 @@ for outcome in ("H", "D", "A"):
 
 ---
 
-## 5. OPT-02：模型滚动更新机制
+## 5. OPT-02：模型滚动更新机制 ✅ 已完成
 
-### 问题描述
+### 实现说明
 
-当前 `train.py` 一次性训练 4 个赛季，整赛季用同一批参数预测。赛季开始时球队能力分布和赛季末期存在显著差异（伤病、主帅变动、状态波动），固定参数误差累积严重。
+Walk-Forward Growing Window 方案，在 `backtest/engine.py` 中新增 `rolling` / `retrain_every` 参数：
 
-### 方案：Walk-Forward 滚动训练
+- `run_backtest_from_rows(..., rolling=True, retrain_every=10)`
+- 内部提取 `_static_backtest()` 和 `_rolling_backtest()` 两个私有函数
+- 滚动逻辑：测试集按日期排序后每 `retrain_every` 场为一批，每批前用已完赛数据重训模型（growing window）
+- 安全检查：每批预测前断言 batch 中不含已训练的 match_id，确保无数据泄漏
+- `scripts/backtest.py` 新增 `--rolling` / `--retrain-every` 参数
+- `scripts/compare_rolling.py` 新增五大联赛并排对比脚本
 
-每经过 `retrain_every_n_matches` 场比赛，用滑动窗口重新拟合模型：
+### 测试集对比结果（2023-24，retrain_every=10）
 
-```python
-# scripts/train_rolling.py  新增脚本
+| 联赛 | 静态 Brier | 静态 ROI | 滚动 Brier | 滚动 ROI | ROI 变化 |
+|------|-----------|---------|-----------|---------|---------|
+| E0   | 0.1899 | **+3.93%** | 0.1858 | -18.43% | ⬇ -22.36% |
+| SP1  | 0.2013 | -28.40% | 0.1923 | **-12.45%** | ⬆ +15.95% |
+| D1   | 0.2017 | -15.03% | 0.1920 | -17.87% | ⬇ -2.85% |
+| I1   | 0.2012 | -14.18% | 0.1990 | -7.97% | ⬆ +6.20% |
+| F1   | 0.2091 | -3.81%  | 0.2106 | -10.21% | ⬇ -6.40% |
+| **均值** | 0.2006 | -11.49% | 0.1960 | -13.39% | ⬇ -1.89% |
 
-WINDOW_SEASONS = ["2021-22", "2022-23", "2023-24"]  # 滑动窗口
-RETRAIN_EVERY  = 10                                  # 每10场重训一次
+### 关键结论
 
-def rolling_train(league_id: str, window_rows: list[dict]) -> DixonColesModel:
-    cutoff = max(r["match_date"] for r in window_rows)
-    model  = DixonColesModel()
-    model.fit(_attach_cutoff(window_rows, cutoff), league_id)
-    return model
-```
+1. **Brier Score 普遍改善**：5 个联赛 4 个的概率校准质量提升，滚动训练有效跟踪球队能力漂移。
+2. **ROI 结果分化**：SP1、I1 改善明显（强队主导联赛，静态参数过时严重）；E0 大幅恶化（+3.93% → -18.43%），原因是 E0 的正收益依赖于"固定参数与市场的稳定偏差"，滚动更新消除了该偏差。
+3. **再次验证**：Brier 改善 ≠ ROI 改善（与 OPT-C1 Platt 校准结论一致）。
 
-在 `backtest/engine.py` 的 `run_backtest_from_rows()` 中支持 `rolling=True` 模式：
+### 生产策略
 
-```python
-# backtest/engine.py  run_backtest_from_rows() 新增参数
+**`rolling=False` 仍为生产默认值**，`run_all_backtests.py` 不变。按联赛差异化考虑：E0 维持静态；SP1、I1 可考虑开启滚动。
 
-def run_backtest_from_rows(
-    *,
-    rows: list[dict],
-    league_id: str,
-    train_seasons: list[str],
-    val_season: str,
-    test_season: str,
-    rolling: bool = False,         # 新增
-    retrain_every: int = 10,       # 新增
-) -> BacktestResult:
-    ...
-    if rolling:
-        # 测试集按 retrain_every 分批，每批重训一次
-        return _rolling_backtest(rows, ...)
-    else:
-        # 原有逻辑不变
-        ...
-```
+### 验收状态
 
-### 验收标准
-
-- `rolling=True` 模式下，测试集每 `retrain_every` 场比赛用一个新训练的模型预测
-- 不引入未来数据（每次重训的 cutoff = 当前批次的最后一场）
-- `pred.train_until < pred.match_date` 断言在滚动模式下仍然通过
-- 与 `rolling=False` 对比，在同一测试集上输出两份 Brier Score 对比报告
+- ✅ 滚动模式每 `retrain_every` 场用一个新模型预测（4 联赛 Brier 改善验证）
+- ✅ 无未来数据泄漏（match_id 不重叠断言 + `test_rolling_no_leakage` 通过）
+- ✅ `train_until` 单调不递减（`test_rolling_train_until_monotone` 通过）
+- ✅ 滚动与静态结果不同（`test_rolling_vs_static_differ` 通过）
+- ✅ 预测场数与静态一致（`test_rolling_same_count_as_static` 通过）
+- ✅ 156 tests passed
 
 ---
 
@@ -487,10 +476,11 @@ class XGBEnsembleModel:
 ### 推荐调优顺序（下一阶段）
 
 ```
-1. OPT-02：实现滚动训练，重新跑验证集基线
+1. ✅ OPT-02：Walk-Forward 滚动训练（已完成，结论：E0 维持静态，SP1/I1 可考虑滚动）
 2. 调 decay_xi（时间衰减权重，对赛季中期影响大）
 3. 调 safety_margin（基于覆盖率 / ROI 权衡）
-4. 若引入校准，调 Platt L2 正则强度
+4. OPT-04：疲劳指数完善（接入城市距离估算 travel_km）
+5. 若引入校准，调 Platt L2 正则强度
 ```
 
 ### 评估指标优先级
@@ -499,6 +489,10 @@ class XGBEnsembleModel:
 ROI（投注收益）> Brier Score（概率校准质量）> Sharpe Ratio（风险调整收益）
 ```
 
-**重要发现**：Brier Score 改善不等于 ROI 改善。Platt 校准将 E0 Brier 从 0.190 改善，但将 ROI 从 +3.93% 拉到 -8.94%。对于投注策略，ROI 是首要指标。
+**重要发现（累积结论）**：
+- Brier Score 改善 ≠ ROI 改善（OPT-C1 Platt 和 OPT-02 滚动训练均验证了这一规律）
+- Platt 校准：E0 Brier 改善，ROI 从 +3.93% → -8.94%
+- Walk-Forward 滚动：平均 Brier 改善 0.0046，但平均 ROI 恶化 1.89%；SP1/I1 例外（ROI 改善 6~16%）
+- E0 正 ROI 的来源是"固定参数与市场的稳定长期偏差"，任何使模型更贴近市场真实概率的改动都会削弱这个优势
 
 随机猜测 Brier（三分类）≈ 0.222，基准模型（预测历史分布）≈ 0.215，Dixon-Coles 目标 ≤ 0.200。

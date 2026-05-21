@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 足球量化分析系统，覆盖欧洲五大联赛（EPL/LaLiga/Bundesliga/SerieA/Ligue1）与 2026 FIFA 世界杯。核心目标：通过概率模型识别正期望场次，系统化生成最优多串场组合，最大化期望收益。
 
-**当前进度**：所有 Phase 1~6 均已完成并通过测试（152 tests passed）。
+**当前进度**：所有 Phase 1~6 均已完成并通过测试（156 tests passed）。
 - Phase 1：数据管道（collectors / processors / storage）✅
 - Phase 2：Dixon-Coles v2 模型（含 form/fatigue 状态修正）+ Platt 校准 ✅
 - Phase 3：串场优化器（正期望筛选 / 三层串场 / 系统投注）✅
@@ -16,6 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - OPT-01：form/momentum/fatigue 特征接入 Dixon-Coles λ 修正 ✅
 - OPT-C1：Platt 缩放替换 Isotonic 校准，加 L2 正则防单赛季过拟合 ✅
 - OPT-C2：指标体系重写为 Flat Stake + EV≥1.05 筛选策略 ✅
+- OPT-02：Walk-Forward 滚动训练（growing window，retrain_every=10）✅
 
 ## 常用命令
 
